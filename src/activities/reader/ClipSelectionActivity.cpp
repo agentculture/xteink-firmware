@@ -297,12 +297,30 @@ void ClipSelectionActivity::moveToPage(const int pageOffset) {
 bool ClipSelectionActivity::buildSelectedText(const int first, const int last, std::string& text) const {
   text.clear();
   text.reserve(CLIPPING_TEXT_MAX);
-  for (int i = first; i <= last; ++i) {
-    const WordBox& current = words[i];
+  const size_t count = last - first + 1;
+  auto order = makeUniqueNoThrow<uint16_t[]>(count);
+  if (!order) {
+    LOG_ERR("CLIP", "OOM: selection export order");
+    return false;
+  }
+  bool sourceKnown = true;
+  for (size_t i = 0; i < count; ++i) {
+    order[i] = static_cast<uint16_t>(first + i);
+    sourceKnown &= words[order[i]].startOffset != UINT32_MAX && words[order[i]].endOffset != UINT32_MAX;
+  }
+  // Keep navigation in visual order and export in logical source order.
+  if (sourceKnown) {
+    std::sort(order.get(), order.get() + count, [this](const uint16_t a, const uint16_t b) {
+      if (words[a].startOffset == words[b].startOffset) return a < b;
+      return words[a].startOffset < words[b].startOffset;
+    });
+  }
+  for (size_t i = 0; i < count; ++i) {
+    const WordBox& current = words[order[i]];
     const char* word = cleanWordStart(current.text);
     char separator = '\0';
-    if (i > first) {
-      const WordBox& previous = words[i - 1];
+    if (i > 0) {
+      const WordBox& previous = words[order[i - 1]];
       const bool sourceKnown = previous.endOffset != UINT32_MAX && current.startOffset != UINT32_MAX;
       const bool separated = sourceKnown ? current.startOffset > previous.endOffset
                                          : current.row != previous.row || current.x > previous.x + previous.width + 2;
