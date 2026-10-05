@@ -303,13 +303,13 @@ bool ClipSelectionActivity::buildSelectedText(const int first, const int last, s
     LOG_ERR("CLIP", "OOM: selection export order");
     return false;
   }
-  bool sourceKnown = true;
+  bool allSourcesKnown = true;
   for (size_t i = 0; i < count; ++i) {
     order[i] = static_cast<uint16_t>(first + i);
-    sourceKnown &= words[order[i]].startOffset != UINT32_MAX && words[order[i]].endOffset != UINT32_MAX;
+    allSourcesKnown &= words[order[i]].startOffset != UINT32_MAX && words[order[i]].endOffset != UINT32_MAX;
   }
   // Keep navigation in visual order and export in logical source order.
-  if (sourceKnown) {
+  if (allSourcesKnown) {
     std::sort(order.get(), order.get() + count, [this](const uint16_t a, const uint16_t b) {
       if (words[a].startOffset == words[b].startOffset) return a < b;
       return words[a].startOffset < words[b].startOffset;
