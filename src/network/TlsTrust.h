@@ -22,11 +22,14 @@ bool isHttpsUrl(std::string_view url);
 // client carried, so a request without trust anchors fails closed.
 void applyVerifiedTls(freeink::SecureHttpClient& http);
 
-// Certificate validity is checked against the wall clock. Before the first
-// https request of a boot, run one bounded SNTP sync so a clock restored from
-// the persisted floor (possibly weeks stale) cannot reject freshly issued
-// leaf certificates. Later calls return immediately. Never disables checks:
-// with no usable time the handshake fails closed.
+// Certificate validity is checked against the wall clock. Before an https
+// request, make sure SNTP had one bounded chance to set it, so a clock
+// restored from the persisted floor (possibly weeks stale) cannot reject
+// freshly issued leaf certificates. Reuses an SNTP attempt already running
+// this boot (Wi-Fi join) instead of restarting it, and never waits more than
+// once per sntp_policy::RETRY_AFTER_MS (SntpPolicy.h); other calls return
+// immediately. Never disables checks: with no usable time the handshake fails
+// closed.
 void ensureClockForTls();
 
 }  // namespace tls_trust

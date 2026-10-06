@@ -4,10 +4,12 @@
 #include <Logging.h>
 #include <SecureHttpClient.h>
 #include <TrustedTime.h>
+#include <esp_sntp.h>
 #include <wolfssl/ssl.h>
 
 #include <cstring>
 
+#include "SntpPolicy.h"
 #include "XteinkCaBundle.h"
 
 // Verified HTTPS needs the wolfSSL transport; without it SecureClient is an
@@ -26,10 +28,41 @@
 namespace tls_trust {
 
 namespace {
-// Bounded SNTP wait before the first https request of a boot. pool.ntp.org
-// usually answers in well under a second; 5s caps the worst case.
+// Bounded SNTP wait before an https request. pool.ntp.org usually answers in
+// well under a second; 5s caps the worst case. When and how often the wait
+// happens is sntp_policy::actionFor (SntpPolicy.h): at most once per
+// RETRY_AFTER_MS, and not at all while an SNTP attempt started earlier this
+// boot is still running and the clock is plausible.
 constexpr uint32_t CLOCK_SYNC_TIMEOUT_MS = 5000;
+// configTzTime (HalClock::syncFromNTP, TrustedTime) registers at most three
+// servers.
+constexpr uint8_t SNTP_SERVER_SLOTS = 3;
 bool clockSynced = false;
+bool waitedBefore = false;
+uint32_t lastWaitMs = 0;
+
+// True once an SNTP answer has set the clock. ESP-IDF's
+// sntp_get_sync_status() clears COMPLETED on read (lwip/apps/sntp/sntp.c), so
+// it is read exactly once per poll; the per-server reachability register
+// (set when a server's answer was processed, cleared only by sntp_stop) also
+// catches an answer that another poller already consumed, e.g. one that
+// arrived after HalClock::syncFromNTP gave up.
+bool sntpAnswered() {
+  if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) return true;
+  for (uint8_t i = 0; i < SNTP_SERVER_SLOTS; ++i) {
+    if (esp_sntp_getreachability(i) != 0) return true;
+  }
+  return false;
+}
+
+bool waitForSntp(const uint32_t timeoutMs) {
+  const unsigned long deadline = millis() + timeoutMs;
+  for (;;) {
+    if (sntpAnswered()) return true;
+    if (static_cast<long>(deadline - millis()) <= 0) return false;
+    delay(100);
+  }
+}
 }  // namespace
 
 bool isHttpsUrl(const std::string_view url) {
@@ -46,11 +79,26 @@ bool isHttpsUrl(const std::string_view url) {
 void applyVerifiedTls(freeink::SecureHttpClient& http) { http.setCACert(XTEINK_CA_BUNDLE_PEM); }
 
 void ensureClockForTls() {
-  if (clockSynced) return;
-  clockSynced = trustedtime::syncNow(CLOCK_SYNC_TIMEOUT_MS);
-  if (!clockSynced) {
+  if (!clockSynced && sntpAnswered()) clockSynced = true;
+  const uint32_t now = millis();
+  const sntp_policy::Inputs in{clockSynced, esp_sntp_enabled(), trustedtime::trustedNow() != 0, waitedBefore,
+                               now - lastWaitMs};
+  const sntp_policy::Action action = sntp_policy::actionFor(in);
+  if (action == sntp_policy::Action::Skip) return;
+
+  waitedBefore = true;
+  lastWaitMs = now;
+  // StartAndWait: nothing started SNTP this boot. startSync() is a no-op while
+  // SNTP runs, so an in-flight exchange is never restarted (Wait).
+  if (action == sntp_policy::Action::StartAndWait) trustedtime::startSync();
+  clockSynced = waitForSntp(CLOCK_SYNC_TIMEOUT_MS);
+  if (clockSynced) {
+    trustedtime::note();
+    LOG_INF("TLS", "SNTP sync done in %lu ms", static_cast<unsigned long>(millis() - now));
+  } else {
     // Not fatal here: a restored clock floor may still be good enough. If it
     // is not, wolfSSL rejects the certificate dates and the request fails.
+    // Logged once per wait, not once per request.
     LOG_ERR("TLS", "SNTP sync failed; certificate date checks use the restored clock");
   }
 }

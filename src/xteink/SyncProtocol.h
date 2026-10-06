@@ -66,6 +66,13 @@ std::string normalizeOrigin(const std::string& url);
 
 bool isHttps(const std::string& origin);
 
+// True when a non-zero budget started at startMs has run out at nowMs
+// (millis() values; unsigned subtraction keeps it right across the 49-day
+// wrap). A zero budget never expires. Bounds the whole LAN probe (risk r21).
+constexpr bool budgetExpired(const uint32_t nowMs, const uint32_t startMs, const uint32_t budgetMs) {
+  return budgetMs > 0 && nowMs - startMs >= budgetMs;
+}
+
 // The download url from the queue must be a root-relative path on the same
 // server ("/api/device/items/42"). Rejects absolute and protocol-relative
 // URLs, so the device key is never sent to another host.

@@ -45,6 +45,7 @@
 #include "util/PluginEvents.h"
 #include "util/ScreenshotUtil.h"
 #include "util/Timezones.h"
+#include "xteink/KeyDiag.h"
 #include "xteink/ProvisioningProtocol.h"
 
 #if CROSSPOINT_VECTOR_FONTS
@@ -704,6 +705,7 @@ void loop() {
 
   gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP);
   mappedInputManager.update();
+  xteink::keydiag::poll();  // xteink: debug builds only (KeyDiag.h)
 
   if (activityManager.requiresExclusiveStorageLoop()) {
     // USB Drive handed the raw SD card to the host. Do not run screenshots,

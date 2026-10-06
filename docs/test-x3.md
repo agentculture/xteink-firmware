@@ -273,3 +273,90 @@ in `docs/xteink/sync.md`.
 - [ ] **Key never on the wire elsewhere.** With mitmproxy on the tunnel path
   (see Security (t13) bench test), the sync fails closed and no
   `Authorization` header is visible.
+
+## Tab navigation (d2)
+
+Applies to Settings and Reader > Text Settings (every screen built on
+`UiTabListActivity`). The Library keeps its own sort-tab navigation (front
+Left on the sort tabs opens Search) and is not covered here.
+
+- [ ] **Left/Right switch tabs at once.** In Settings, a single front Left or
+  Right press moves to the previous/next tab (wrapping at the ends). No long
+  press is needed. The button hints over those keys read "Left"/"Right".
+- [ ] **Focus kind is kept.** With the tab band highlighted, Left/Right keep
+  the band highlighted. With a row highlighted, Left/Right land on a row of
+  the new tab (Settings: its first row; Text Settings: the row last used on
+  that tab), never on the band.
+- [ ] **Up/Down move within the tab.** Side Up/Down move one row per press.
+  Down from the band enters the first row; Up from the first row returns to the
+  band; Down from the last row wraps to the band.
+- [ ] **Hold Up/Down pages.** On a long tab (Text Settings > Family with SD
+  fonts, or a Settings tab that scrolls), holding Down jumps a page of rows at
+  a time; holding Up jumps back.
+- [ ] **Hold Left/Right repeats.** Holding Right steps through the tabs about
+  twice a second.
+- [ ] **Confirm/Back unchanged.** Confirm on the band still advances the tab;
+  on a row it toggles/opens the setting. In Settings, Back from a row returns
+  to the band and Back on the band leaves Settings (and saves); in Text
+  Settings, Back closes the screen as before.
+- [ ] **Front-button remap.** In Settings > Controls swap the front Left/Right
+  mapping: tab switching follows the remapped keys.
+- [ ] **Reader untouched.** In a book, Left/Right still turn pages and the
+  zoom key still enters zoom mode (t14 checks 2 to 6).
+- [ ] **Touch boards (if available).** On an X4 Pro, tapping a tab pill still
+  switches tabs and tapping a row still selects it.
+
+## Key mapping diagnostic
+
+The X3 has 8 physical keys (top edge: a regular key and Power; a left and a
+right key; four bottom keys in two pairs). freeink-sdk's `XteinkAdcLadder`
+decode reads 7 logical keys: 4 on the GPIO1 ladder, 2 on the GPIO2 ladder and
+Power on its own GPIO. Debug builds (`pio run -e default`, which has
+`ENABLE_SERIAL_LOG` and `LOG_LEVEL=2`) log every key state change on the serial
+console so the physical-to-logical mapping can be measured. Release builds
+(`gh_release`, `LOG_LEVEL=1`) do not contain the code. No key mapping changes
+until the values are recorded.
+
+Open a serial monitor at 115200 baud, then press and release each physical key
+on its own, then a few pairs. Each change prints one line, at most ten a
+second:
+
+```text
+[XKEY] adc1=2873 adc2=4095 pwr=1 mask=0x02 -> Confirm
+[XKEY] adc1=4095 adc2=4095 pwr=1 mask=0x00 -> none
+```
+
+- `adc1`, `adc2`: raw 12-bit `analogRead` of GPIO1 and GPIO2. Both idle near
+  4095.
+- `pwr`: level of the power GPIO (`BoardConfig::ACTIVE.input.power`).
+- `mask` and the names: the logical buttons the firmware currently sees as
+  pressed (bit 0 Back, 1 Confirm, 2 Left, 3 Right, 4 Up, 5 Down, 6 Power).
+- `UNDECODED`: a reading is off the idle rail (below 4000) but no logical
+  button is pressed. A brief one at a press or release edge is the 5 ms
+  debounce. A steady one means a key whose ladder value the SDK does not map.
+- While a key is held, a reading that moves more than 150 counts prints a new
+  line, so a second key on the same ladder shows up.
+
+SDK bands (`freeink-sdk/libs/hardware/InputManager/src/InputManager.cpp`,
+`ADC_RANGES_1` / `ADC_RANGES_2`; `ADC_NO_BUTTON = 3900` in `InputManager.h`).
+A reading `v` is button `i` when `ranges[i+1] < v <= ranges[i]`:
+
+| Pin | Band | Logical button | SDK recorded average |
+| --- | --- | --- | --- |
+| GPIO1 | 3100 < v <= 3900 | Back | 3512 |
+| GPIO1 | 2090 < v <= 3100 | Confirm | 2694 |
+| GPIO1 | 750 < v <= 2090 | Left | 1493 |
+| GPIO1 | v <= 750 | Right | 5 |
+| GPIO2 | 1120 < v <= 3900 | Up | 2242 |
+| GPIO2 | v <= 1120 | Down | 5 |
+| either | v > 3900 | none (idle) | ~4095 |
+
+Every reading at or below 3900 decodes to some button, so an extra key on one
+of the two ladders shows up as an existing logical button, with a raw value
+away from that button's average. A key that prints no line at all is on
+neither ladder nor the power GPIO, and the firmware cannot see it today.
+
+Record for each physical key: its position, the `adc1`/`adc2`/`pwr` values
+and the decoded name. Check especially the top regular key (reported as no
+reaction or a lock-up until Power) and which key, if any, decodes as Up (the
+default zoom key, t14).

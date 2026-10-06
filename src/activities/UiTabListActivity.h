@@ -2,6 +2,7 @@
 
 #include <vector>
 
+#include "activities/TabListNav.h"
 #include "activities/UiListActivity.h"
 
 // UiListActivity variant for screens with a tab band above the list (Settings,
@@ -9,8 +10,9 @@
 // the list rows, so props.selectedIndex = ring - 1 (-1 = tab band focused).
 // Each tab owns its own ListNav (selection + viewport memory); activeNav()
 // redirects the whole UiListActivity protocol (touch routing, swipe scroll,
-// screen sync) to the active tab's state. Button navigation walks the ring on
-// release and steps the TAB on continuous hold. The tab-bar chrome (pill
+// screen sync) to the active tab's state. Button navigation (xteink d2): front
+// Left/Right switch tabs, side Up/Down walk the ring, a held Up/Down pages
+// through the rows (TabListNav.h). The tab-bar chrome (pill
 // styles, focused band wash) is shared verbatim via buildTabBar().
 //
 // Subclasses own the button semantics wholesale (handleButtons is pure here:
@@ -35,8 +37,8 @@ class UiTabListActivity : public UiListActivity {
   virtual freeink::ui::TabIndicator tabIndicator(int) const { return freeink::ui::TabIndicator::None; }
   // Touch tap on a tab pill (bounds already checked).
   virtual void onTabAction(int index) = 0;
-  // Advance the active tab by direction (continuous-hold navigation; also what
-  // Confirm on the tab bar should do). Subclass owns wrap and any per-switch
+  // Advance the active tab by direction (front Left/Right; also what Confirm
+  // on the tab bar should do). Subclass owns wrap and any per-switch
   // state reset, and requests the update.
   virtual void stepTab(int direction) = 0;
   // The two tab screens disagree on press-vs-release and Back semantics, so
@@ -49,8 +51,9 @@ class UiTabListActivity : public UiListActivity {
   int ringPos() const;
   // ACTION_ROW lands as ring = row + 1, then activateIndex(row).
   void onRowAction(const freeink::ui::ActionEvent& event) override;
-  // Press walks the ring; continuous hold steps the tab.
+  // Left/Right step the tab, Up/Down walk the ring (TabListNav.h).
   void navigateButtons() override;
+  void applyTabListMove(tab_list_nav::Move move, bool held);
   // Move to a ring position: tab bar rewinds the viewport, a row pulls the
   // viewport to itself.
   void moveRingTo(int ringIndex);
