@@ -232,6 +232,10 @@ class BaseTheme {
  public:
   virtual ~BaseTheme() = default;
 
+  // xteink fork: themed boot splash. Returns false to keep BootActivity's
+  // stock splash; a theme that draws (and displays) its own returns true.
+  virtual bool drawBootScreen(GfxRenderer&) const { return false; }
+
   // Component drawing methods
   static freeink::ui::BitmapRef checkboxIcon(bool checked);
   static void setCheckboxRow(freeink::ui::ListItem& item, bool checked);
