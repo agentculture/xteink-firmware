@@ -438,3 +438,38 @@ the short-press action does not also run. Policy is host-tested in
 - [ ] Long-press Back while the end-of-book menu is up does not rotate.
 - [ ] XTC book: long-press Confirm/Back do nothing new (zoom and the rotate
   hold are EPUB-reader only).
+
+## Reset boot (d5)
+
+The X3's top regular key is the chip RESET. A reset reports
+`ESP_RST_POWERON` with no wakeup cause, which upstream classifies as an unheld
+power-button cold boot (`HalGPIO::getWakeupReason`, `lib/hal/HalGPIO.cpp`) and
+puts back to sleep (`src/main.cpp`, "Power-button wake not held through
+verification, sleeping"). On the X3 it now boots like a cold boot when the fuel
+gauge reports at least 3% and 3400 mV. Decision logic: `src/xteink/ResetBoot.h`,
+host tests in `test/reset_boot`.
+
+| Boot | Reset reason / wake cause | X3 now | X4 |
+|------|---------------------------|--------|----|
+| Power key wake from deep sleep, held | DEEPSLEEP / GPIO | boots (verified) | same |
+| Power key wake from deep sleep, released early | DEEPSLEEP / GPIO | sleeps (ghost-wake guard) | same |
+| Power key cold boot, held | POWERON / none | boots (verified) | same |
+| Top key (RESET), battery >= 3% and >= 3400 mV | POWERON / none | **boots, splash, then Home or the last book** | n/a |
+| Top key or battery reconnect, battery low or gauge unreadable | POWERON / none | sleeps (upstream) | n/a |
+| USB plugged into an off unit, charging | POWERON / none, USB | charge-sleeps (upstream AfterUSBPower) | same |
+| Brownout, panic, software restart | BROWNOUT / SW / PANIC | boots (upstream Other) | same |
+
+Checks (serial log at 115200):
+
+- [ ] While reading, press the top key: the log shows `Power-on without held
+  button: battery NN% NNNNmV -> reset key, booting`, the splash appears, and the
+  device returns to the book (or Home if the book was not open).
+- [ ] On Home, press the top key: boots to Home.
+- [ ] Power key from sleep still needs the hold: a quick tap while asleep (Short
+  Power Button = not Sleep) goes back to sleep; a hold wakes.
+- [ ] With USB attached and charging, press the top key: note the result (the
+  upstream AfterUSBPower path charge-sleeps; this was not changed).
+- [ ] Low battery: below 3% (or gauge reading under 3.4 V) the top key leaves
+  the device asleep and the log says `-> sleeping`; no repeated boots.
+- [ ] Ten top-key presses in a row: each boots once, no boot loop, no crash
+  screen.
