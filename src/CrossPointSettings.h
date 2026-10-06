@@ -105,6 +105,11 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     SIDE_BUTTON_LAYOUT_COUNT
   };
 
+  // Physical side key that toggles reader zoom mode (xteink fork). The chosen
+  // key stops acting as a page-turn key; ZOOM_BTN_OFF disables zoom mode.
+  // Which physical key is "top" on the X3 is unverified, hence configurable.
+  enum ZOOM_BUTTON { ZOOM_BTN_UP = 0, ZOOM_BTN_DOWN = 1, ZOOM_BTN_OFF = 2, ZOOM_BUTTON_COUNT };
+
   // Font family options (built-in fonts only; SD card fonts use sdFontFamilyName)
   enum FONT_FAMILY { NOTOSERIF = 0, NOTOSANS = 1, FONT_FAMILY_COUNT };
   static constexpr uint8_t LEGACY_OPENDYSLEXIC = 2;
@@ -282,6 +287,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Button layouts (front layout retained for migration only)
   uint8_t frontButtonLayout = BACK_CONFIRM_LEFT_RIGHT;
   uint8_t sideButtonLayout = PREV_NEXT;
+  uint8_t zoomButton = ZOOM_BTN_UP;
   uint8_t frontButtonFollowOrientation = 0;
   // Front button remap (logical -> hardware)
   // Used by MappedInputManager to translate logical buttons into physical front buttons.

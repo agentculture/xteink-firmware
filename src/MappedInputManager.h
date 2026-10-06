@@ -28,7 +28,8 @@ class MappedInputManager {
     ScreenLeft,
     ScreenRight,
     ScreenUp,
-    ScreenDown
+    ScreenDown,
+    Zoom  // side key that toggles reader zoom mode (SETTINGS.zoomButton)
   };
   enum class SwipeDir { None, Left, Right, Up, Down };
 
@@ -133,6 +134,8 @@ class MappedInputManager {
 
   Button mapScreenDirection(Button button) const;
   Labels mapFrontLabels(const char* back, const char* confirm, const char* left, const char* right) const;
+  // True when hw is the side key SETTINGS.zoomButton reserves for zoom mode.
+  static bool isZoomKey(uint8_t hw);
   bool mapButton(Button button, bool (HalGPIO::*fn)(uint8_t) const) const;
   // SDK edge classification (fui::edgeSwipe) + the shared decode/held-time
   // bookkeeping; the wrappers below give each edge its board meaning.
