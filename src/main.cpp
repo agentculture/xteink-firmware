@@ -34,6 +34,7 @@
 #include "WifiCredentialStore.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
+#include "activities/settings/ProvisionUsbActivity.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -42,6 +43,7 @@
 #include "util/PluginEvents.h"
 #include "util/ScreenshotUtil.h"
 #include "util/Timezones.h"
+#include "xteink/ProvisioningProtocol.h"
 
 #if CROSSPOINT_VECTOR_FONTS
 // Rendering (incl. FreeType TTF rasterization) runs on the Arduino loop task.
@@ -722,9 +724,15 @@ void loop() {
 
   // Handle incoming serial commands,
   // nb: we use logSerial from logging to avoid deprecation warnings
-  if (logSerial.available() > 0) {
+  // While the Provision via USB screen is open it owns the serial RX path.
+  if (!ProvisionUsbActivity::isActive() && logSerial.available() > 0) {
     String line = logSerial.readStringUntil('\n');
-    if (line.startsWith("CMD:")) {
+    if (xteink::prov::isProvisioningLine(line.c_str(), line.length())) {
+      // Provisioning is only accepted on the explicit screen; say so rather than
+      // dropping the line silently. The line is not parsed or logged.
+      logSerial.print("\n");
+      logSerial.print(xteink::prov::buildErrLine(xteink::prov::Error::NotInProvisioningMode).c_str());
+    } else if (line.startsWith("CMD:")) {
       String cmd = line.substring(4);
       cmd.trim();
       if (cmd == "SCREENSHOT") {
