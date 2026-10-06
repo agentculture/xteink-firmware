@@ -108,7 +108,7 @@ build-verified. No preview images exist yet.
    card. Then remove it from recents (or use a second SD card) to see the
    empty state.
 
-### Checks
+### Theme checks
 
 - [ ] **Boot.** A cold boot (power on, not a wake from sleep) shows the
   bookplate: a heavy outer frame with a hairline inner frame, an open-book
