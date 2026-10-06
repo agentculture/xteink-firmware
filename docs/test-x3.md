@@ -428,10 +428,10 @@ the short-press action does not also run. Policy is host-tested in
 - [ ] Settings > Controls > Long-Press Menu shows **Zoom** where X4 shows
   Disabled. Pick Bookmark: long-press Confirm adds a bookmark instead of
   zooming. Set it back to Zoom.
-- [ ] Long-press Back (4.1): portrait switches to landscape (and back on the
+- [ ] Long-press Back (4.1): portrait switches to Landscape CCW (and back on the
   next hold); the same passage is on screen; the choice survives leaving and
   reopening the book (Settings > Reader > Orientation shows it).
-- [ ] From Inverted, a hold goes to Landscape CCW and back to Inverted.
+- [ ] From Inverted, a hold goes to Landscape CW and back to Inverted.
 - [ ] Short Back still leaves the book as before. The long-press Back to the
   file browser no longer exists on the X3 (use Back Short to File Browser in
   Settings if needed).

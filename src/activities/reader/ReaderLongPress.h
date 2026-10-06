@@ -29,18 +29,19 @@ constexpr bool confirmHoldZooms(const bool x3Profile, const uint8_t longPressMen
 constexpr bool backHoldRotates(const bool x3Profile) { return x3Profile; }
 
 // Portrait <-> landscape, keeping the pairs that differ by one quarter turn:
-// Portrait <-> Landscape CW, Inverted <-> Landscape CCW (CrossPointSettings::
-// ORIENTATION values 0..3). Toggling twice returns to the start.
+// Portrait <-> Landscape CCW, Inverted <-> Landscape CW (CrossPointSettings::
+// ORIENTATION values 0..3; the operator preferred this direction on the X3,
+// 2026-10-07). Toggling twice returns to the start.
 constexpr uint8_t toggledOrientation(const uint8_t orientation) {
   switch (orientation) {
     case 0:  // PORTRAIT
-      return 1;
-    case 1:  // LANDSCAPE_CW
-      return 0;
-    case 2:  // INVERTED
       return 3;
-    case 3:  // LANDSCAPE_CCW
+    case 1:  // LANDSCAPE_CW
       return 2;
+    case 2:  // INVERTED
+      return 1;
+    case 3:  // LANDSCAPE_CCW
+      return 0;
     default:
       return 0;
   }

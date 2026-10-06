@@ -35,10 +35,10 @@ TEST(ReaderLongPressTest, LongPressBackRotatesOnlyOnX3) {
 TEST(ReaderLongPressTest, HoldIsSevenHundredMs) { EXPECT_EQ(HOLD_MS, 700UL); }
 
 TEST(ReaderLongPressTest, ToggleSwitchesPortraitAndLandscape) {
-  EXPECT_EQ(toggledOrientation(0), 1);  // portrait -> landscape CW
-  EXPECT_EQ(toggledOrientation(1), 0);
-  EXPECT_EQ(toggledOrientation(2), 3);  // inverted -> landscape CCW
-  EXPECT_EQ(toggledOrientation(3), 2);
+  EXPECT_EQ(toggledOrientation(0), 3);  // portrait -> landscape CCW
+  EXPECT_EQ(toggledOrientation(3), 0);
+  EXPECT_EQ(toggledOrientation(2), 1);  // inverted -> landscape CW
+  EXPECT_EQ(toggledOrientation(1), 2);
 }
 
 TEST(ReaderLongPressTest, ToggleTwiceIsIdentityAndAlwaysChangesAxis) {
