@@ -526,3 +526,26 @@ networks are not tried.
   `Auto-connect budget used up` for the networks it skipped.
 - [ ] Confirm during auto-connect still shows the network list at once.
 - [ ] Manual connection timeout is unchanged (15 s).
+
+## Sync free-space cache (fix F)
+
+The status report's `free_sd_bytes` comes from a cache (RAM + NVS keys
+`fs_free`/`fs_at` in the `xteink` namespace) instead of a 7 s free-cluster
+scan on every sync. Policy: `src/xteink/FreeSpaceCache.h`, host tests in
+`test/xteink_free_space`. The card is scanned when there is no cached value,
+the clock is not trusted, the value is 24 h old or more, or the cached space
+minus the queued downloads is under 64 MB. After downloads the cached value is
+reduced by the bytes written. Space freed or used outside sync (USB drive, web
+upload, deleting books) is not tracked until the next scan, at most 24 h later.
+
+- [ ] First sync after flashing: the log shows `Free space query: NNNN ms`
+  (the scan) and the server shows the device's free space.
+- [ ] Second sync right after: the log shows `Free space: cached N bytes (S s
+  old)` and no `Free space query` line; the time from `Inventory` to the LAN
+  verdict drops by about 7 s.
+- [ ] Download a 20 MB book: on the next sync the server's free space is about
+  20 MB lower than before, without a scan.
+- [ ] Power cycle and sync again: still cached (NVS), no scan.
+- [ ] Nearly full card (fill it to under 64 MB free plus the queue): the sync
+  scans before downloading, and the server marks a too-large item `sd_full`.
+- [ ] Set the clock back or boot without a trusted time: the sync scans.
