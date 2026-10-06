@@ -33,6 +33,7 @@
 #include "SilentRestart.h"
 #include "StatusBarSettingsActivity.h"
 #include "TextSettingsActivity.h"
+#include "XteinkSyncActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/plugins/PluginCatalogActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
@@ -116,6 +117,7 @@ void SettingsActivity::rebuildSettingsLists() {
   // Provisioning rides the USB serial port, which only slim builds leave unstarted.
   systemSettings.push_back(SettingInfo::Action(StrId::STR_PROVISION_USB, SettingAction::ProvisionUsb));
 #endif
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_XTEINK_SYNC_NOW, SettingAction::XteinkSync));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_ABOUT, SettingAction::About));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
   readerSettings.insert(readerSettings.begin(),
@@ -454,6 +456,13 @@ void SettingsActivity::toggleCurrentSetting() {
         }
         break;
 #endif
+      case SettingAction::XteinkSync:
+        if (auto activity = makeUniqueNoThrow<XteinkSyncActivity>(renderer, mappedInput)) {
+          startActivityForResult(std::move(activity), resultHandler);
+        } else {
+          LOG_ERR("SETTINGS", "OOM: XteinkSyncActivity");
+        }
+        break;
       case SettingAction::About:
         if (auto activity = makeUniqueNoThrow<AboutActivity>(renderer, mappedInput)) {
           startActivityForResult(std::move(activity), nullptr);

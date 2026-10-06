@@ -15,6 +15,7 @@
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <SPI.h>
 #include <TrustedTime.h>
 #include <VectorFontSupport.h>
@@ -36,6 +37,7 @@
 #include "activities/ActivityManager.h"
 #include "activities/settings/ProvisionUsbActivity.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
+#include "activities/settings/XteinkSyncActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "platform/UsbSerialJtagHandoff.h"
@@ -147,7 +149,8 @@ constexpr uint32_t SILENT_REBOOT_TARGET_HOME = 0;
 constexpr uint32_t SILENT_REBOOT_TARGET_READER = 1;
 constexpr uint32_t SILENT_REBOOT_TARGET_SETTINGS = 2;
 constexpr uint32_t SILENT_REBOOT_TARGET_JOIN_NETWORK = 3;
-constexpr uint32_t SILENT_REBOOT_TARGET_MAX = SILENT_REBOOT_TARGET_JOIN_NETWORK;
+constexpr uint32_t SILENT_REBOOT_TARGET_XTEINK_SYNC = 4;
+constexpr uint32_t SILENT_REBOOT_TARGET_MAX = SILENT_REBOOT_TARGET_XTEINK_SYNC;
 constexpr uint32_t SILENT_REBOOT_LIGHT_ON = 1U << 0;
 
 // How the device is coming back to life, resolved once at boot. Both resume
@@ -211,6 +214,18 @@ void silentRestartToJoinNetwork() {
 #endif
   armSilentReboot(SILENT_REBOOT_TARGET_JOIN_NETWORK);
   LOG_DBG("MAIN", "Silent restart (target=join-network)");
+  GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+  delay(50);
+  ESP.restart();
+}
+
+void silentRestartToXteinkSync() {
+  if (deepSleepInProgress) return;
+#if FREEINK_CAP_TOUCH
+  if (BoardConfig::hasTouch()) return;
+#endif
+  armSilentReboot(SILENT_REBOOT_TARGET_XTEINK_SYNC);
+  LOG_DBG("MAIN", "Silent restart (target=xteink-sync)");
   GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
   delay(50);
   ESP.restart();
@@ -632,6 +647,14 @@ void setup() {
     // Rebooted on the way *into* File Transfer > Join Network for a fresh heap;
     // resume that flow directly instead of landing on home.
     activityManager.goToJoinNetwork();
+  } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_XTEINK_SYNC) {
+    // "Sync books now" rebooted for a fresh heap; resume it (no second reboot).
+    auto syncActivity = makeUniqueNoThrow<XteinkSyncActivity>(renderer, mappedInputManager, /*freshHeap=*/true);
+    if (syncActivity) {
+      activityManager.replaceActivity(std::move(syncActivity));
+    } else {
+      activityManager.goHome();
+    }
   } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_SETTINGS) {
     // Back out of the WiFi rows and the user is where they left off, not on Home.
     activityManager.goToSettings();

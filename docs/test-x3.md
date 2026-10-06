@@ -222,3 +222,54 @@ iptables rule afterwards
 
 The host equivalent, with the firmware's own wolfSSL and bundle, runs without
 hardware: `scripts/xteink-tls/run.sh` (see `docs/xteink/tls.md`).
+
+## Sync (t17)
+
+Setup: an xteink server reachable on the LAN (`xteink serve`, device app on
+port 8781) with a registered device, the device key and URLs provisioned with
+Settings > System > Provision via USB (docs/provisioning.md), and a saved
+Wi-Fi network. Watch the serial log (`XSYNC` lines). Details of the client are
+in `docs/xteink/sync.md`.
+
+- [ ] **Manual sync over LAN.** Queue two books, then open Settings > System >
+  Sync books now. The device reboots once ("Loading"), joins Wi-Fi, shows
+  "Book 1 of 2" with a progress bar, then a result such as "Synced 14:02 · 2
+  new". Both files are in `/xteink/` and open in the reader. The server shows
+  both entries `delivered` and the device's `last_seen`, `free_sd_bytes` and
+  firmware version.
+- [ ] **Status line.** Back to Home: one line above the button hints reads
+  "Synced HH:MM · 2 new" (no time on a board without RTC before the clock is
+  set). Reboot: the line is still there. Check the xteink theme and Lyra.
+- [ ] **xteink.local fallback.** Clear the LAN URL (provision `lan_url: ""`)
+  with the server advertising `xteink.local`: sync still uses the LAN. Stop
+  the server: the log shows "No answer from http://xteink.local:8781" within
+  a few seconds, then the tunnel is tried.
+- [ ] **Tunnel with verified TLS.** Off the LAN (phone hotspot), sync uses
+  `https://xteink.culture.dev`. Note the `heap`/`max block` values in the
+  "Sync start" log line and that no `ELOWMEM` or wolfSSL `MEMORY_E` appears.
+  Repeat right after a long reading session (open a large EPUB, page 50+
+  times, go Home, then Sync books now).
+- [ ] **Resume.** Queue a large book (20 MB+). Mid-download, power-cycle the
+  access point for ~10 s. The log shows a Range resume (or a restart) and the
+  book still arrives with a matching sha256 and is acked once.
+- [ ] **Cancel.** Press Back during a download: the screen shows "Sync error
+  ECANCEL", no partial file is left in `/xteink/` or
+  `/.crosspoint/xteink-download.part`, and the home line keeps the previous
+  result.
+- [ ] **Revoked key.** Revoke the device on the server, sync: "Sync error
+  E401" and "Device key rejected. Re-pair this device."; the log shows no
+  further requests after the status call.
+- [ ] **Mirror deletes.** On a mirror-mode device, remove a delivered book
+  from the library and sync: the file disappears from `/xteink/`. Annotate or
+  replace a delivered file (any byte change) and remove it from the library:
+  it is kept. A sideloaded copy of a library book is never touched.
+- [ ] **Wi-Fi join hook.** With a book queued, open Home > OPDS (or Settings >
+  Check for updates): on join a "Syncing books..." popup appears and the book
+  arrives. From inside a book (reader menu > KOReader sync), joining Wi-Fi does
+  **not** start a sync.
+- [ ] **No key.** Erase the key (provision `device_key: ""`): Sync books now
+  shows "No device key. Use Provision via USB first." and does not reboot or
+  join Wi-Fi.
+- [ ] **Key never on the wire elsewhere.** With mitmproxy on the tunnel path
+  (see Security (t13) bench test), the sync fails closed and no
+  `Authorization` header is visible.

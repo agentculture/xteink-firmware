@@ -156,6 +156,13 @@ bool HalStorage::readFileToString(const char* moduleName, const std::string& pat
   return file.read(out.data(), size) == static_cast<int>(size);
 }
 
+uint64_t HalStorage::sdFreeBytes() {
+  StorageLock lock;
+  const uint64_t total = SDCard.sdTotalBytes();
+  const uint64_t used = SDCard.sdUsedBytes();  // 0 when the cluster count is unknown
+  return used == 0 || used > total ? 0 : total - used;
+}
+
 bool HalStorage::writeFile(const char* path, const String& content) {
   HAL_STORAGE_WRAPPED_CALL(writeFile, path, content);
 }
