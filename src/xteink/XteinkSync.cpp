@@ -52,7 +52,11 @@ constexpr const char* kNvsNamespace = "xteink";  // shared with XteinkConfig
 constexpr const char* kNvsLastResult = "sync_last";
 
 // The LAN probe must fall through to the tunnel quickly when xteink.local or
-// the provisioned address does not answer.
+// the provisioned address does not answer. It is both the connect timeout and
+// the budget for the whole status call (connect + request + response):
+// SecureHttpClient applies its timeout per phase (connect, then again to the
+// headers, then per body stall), so a peer that accepts the TCP connection but
+// answers slowly could otherwise hold the probe for a multiple of it (r21).
 constexpr uint32_t kLanTimeoutMs = 4000;
 constexpr uint32_t kTunnelTimeoutMs = 15000;
 constexpr uint32_t kTransferTimeoutMs = 30000;
@@ -266,6 +270,10 @@ class Session {
   const std::string origin;
   const bool https;
   uint32_t timeoutMs = kTransferTimeoutMs;
+  // Whole-call budget for call() (0 = none). The connect itself is bounded by
+  // timeoutMs; every later phase polls the abort callback, which also fires
+  // once this budget is spent.
+  uint32_t budgetMs = 0;
 
   bool begin() {
     http = makeUniqueNoThrow<freeink::SecureHttpClient>();
@@ -282,9 +290,10 @@ class Session {
     }
   }
 
-  freeink::SecureHttpClient::AbortCallback abortCallback() const {
+  freeink::SecureHttpClient::AbortCallback abortCallback(const uint32_t startMs = 0) const {
     const Callbacks* c = &cb;
-    return [c] { return cancelled(*c); };
+    const uint32_t budget = budgetMs;
+    return [c, startMs, budget] { return cancelled(*c) || budgetExpired(millis(), startMs, budget); };
   }
 
   // HTTP status, -1 on transport failure, kCallTooLarge when the body would
@@ -292,6 +301,7 @@ class Session {
   int call(const char* method, const char* path, const std::string* body, std::string* response, const size_t cap) {
     WifiPowerSaveGuard psGuard;
     if (https) tls_trust::ensureClockForTls();
+    const uint32_t startMs = millis();
     if (!http->begin(origin + path)) return -1;
     configure(*http, true);
     if (body) http->addHeader("Content-Type", "application/json");
@@ -306,8 +316,13 @@ class Session {
       return true;
     };
     const int status = http->sendRequest(method, body ? reinterpret_cast<const uint8_t*>(body->data()) : nullptr,
-                                         body ? body->size() : 0, sink, abortCallback());
-    if (http->aborted()) return kCallAborted;
+                                         body ? body->size() : 0, sink, abortCallback(startMs));
+    if (http->aborted()) {
+      if (cancelled(cb)) return kCallAborted;
+      // Not the user: the call budget ran out. A transport failure.
+      http->end();
+      return -1;
+    }
     if (tooLarge) return kCallTooLarge;
     // A truncated JSON body is a transport failure, not a parse error.
     if (status >= 200 && status < 300 && response && !http->responseComplete()) return -1;
@@ -487,6 +502,7 @@ Outcome run(GfxRenderer* renderer, const Callbacks& cb, const uint32_t itemBudge
   }
 
   // 1. Inventory: re-hash every delivered file still on the card.
+  uint32_t phaseMs = millis();
   Manifest manifest;
   loadManifest(manifest);
   std::vector<std::string> modified;
@@ -506,10 +522,16 @@ Outcome run(GfxRenderer* renderer, const Callbacks& cb, const uint32_t itemBudge
     }
     if (pruned) saveManifest(manifest);
   }
+  // Phase timings locate where a slow sync spends its time before the first
+  // request (r21: 11 s between "Sync start" and the LAN verdict on the X3).
+  LOG_INF(kTag, "Inventory: %u files hashed in %lu ms", static_cast<unsigned>(manifest.files.size()),
+          static_cast<unsigned long>(millis() - phaseMs));
 
   const LastResult previous = previousResult();
   StatusReport report;
+  phaseMs = millis();
   report.freeSdBytes = freeSdBytes();
+  LOG_INF(kTag, "Free space query: %lu ms", static_cast<unsigned long>(millis() - phaseMs));
   report.firmwareVersion = kFirmwareVersion;
   if (previous.valid) {
     report.lastSyncResult = previous.ok ? "ok" : "error";
@@ -544,17 +566,20 @@ Outcome run(GfxRenderer* renderer, const Callbacks& cb, const uint32_t itemBudge
         continue;
       }
       candidate->timeoutMs = candidate->https ? kTunnelTimeoutMs : kLanTimeoutMs;
+      candidate->budgetMs = candidate->https ? 0 : kLanTimeoutMs;
       if (cb.onProgress) cb.onProgress(cb.ctx, Progress{});
+      const uint32_t probeStart = millis();
       status = candidate->call("POST", "/api/device/status", &body, nullptr, 0);
+      const auto probeMs = static_cast<unsigned long>(millis() - probeStart);
       if (status == kCallAborted) {
         out.error = Error::Cancelled;
         return out;
       }
       if (status < 0) {
-        LOG_INF(kTag, "No answer from %s", origin.c_str());
+        LOG_INF(kTag, "No answer from %s (%lu ms)", origin.c_str(), probeMs);
         continue;
       }
-      LOG_INF(kTag, "Using %s", origin.c_str());
+      LOG_INF(kTag, "Using %s (%lu ms)", origin.c_str(), probeMs);
       session = std::move(candidate);
       break;
     }
@@ -565,6 +590,7 @@ Outcome run(GfxRenderer* renderer, const Callbacks& cb, const uint32_t itemBudge
     return out;
   }
   session->timeoutMs = kTransferTimeoutMs;
+  session->budgetMs = 0;
   out.error = callError(status);
   if (out.error != Error::None) {
     LOG_ERR(kTag, "Status report: %d (%s)", status, errorCode(out.error));

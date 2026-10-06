@@ -6,6 +6,7 @@
 
 #include <string>
 
+#include "network/SntpPolicy.h"
 #include "util/StringUtils.h"
 #include "xteink/SyncProtocol.h"
 
@@ -359,4 +360,63 @@ TEST(XteinkSyncResult, StatusLine) {
   EXPECT_STREQ(buf, "Sync error E401");
   EXPECT_FALSE(formatStatusLine(LastResult{}, t, buf, sizeof(buf)));
   EXPECT_STREQ(buf, "");
+}
+
+// --- r21: LAN probe budget and the SNTP attempt policy ----------------------
+
+TEST(XteinkSyncBudget, ZeroBudgetNeverExpires) {
+  EXPECT_FALSE(budgetExpired(0, 0, 0));
+  EXPECT_FALSE(budgetExpired(0xFFFFFFFFu, 0, 0));
+}
+
+TEST(XteinkSyncBudget, ExpiresAtTheBudget) {
+  EXPECT_FALSE(budgetExpired(1000 + 3999, 1000, 4000));
+  EXPECT_TRUE(budgetExpired(1000 + 4000, 1000, 4000));
+  EXPECT_TRUE(budgetExpired(1000 + 11000, 1000, 4000));
+}
+
+TEST(XteinkSyncBudget, SurvivesMillisWrap) {
+  const uint32_t start = 0xFFFFFC00u;                     // 1024 ms before millis() wraps
+  EXPECT_FALSE(budgetExpired(0x00000300u, start, 4000));  // 1024 + 768 = 1792 ms elapsed
+  EXPECT_TRUE(budgetExpired(0x00000C00u, start, 4000));   // 1024 + 3072 = 4096 ms elapsed
+}
+
+namespace {
+using sntp_policy::Action;
+sntp_policy::Inputs inputs(bool synced, bool running, bool trusted, bool waited = false, uint32_t since = 0) {
+  return sntp_policy::Inputs{synced, running, trusted, waited, since};
+}
+}  // namespace
+
+TEST(XteinkSntpPolicy, SyncedClockNeverWaits) {
+  EXPECT_EQ(sntp_policy::actionFor(inputs(true, false, false)), Action::Skip);
+  EXPECT_EQ(sntp_policy::actionFor(inputs(true, true, true, true, 0)), Action::Skip);
+}
+
+TEST(XteinkSntpPolicy, ReusesRunningAttemptWithRestoredClock) {
+  // The X3 log: the Wi-Fi join's NTP attempt timed out but SNTP keeps
+  // running and the floor restored a plausible clock: no second attempt.
+  EXPECT_EQ(sntp_policy::actionFor(inputs(false, true, true)), Action::Skip);
+}
+
+TEST(XteinkSntpPolicy, FirstRequestWithNothingRunningStartsOneBoundedSync) {
+  EXPECT_EQ(sntp_policy::actionFor(inputs(false, false, true)), Action::StartAndWait);
+  EXPECT_EQ(sntp_policy::actionFor(inputs(false, false, false)), Action::StartAndWait);
+}
+
+TEST(XteinkSntpPolicy, UntrustedClockWaitsOnRunningSntpWithoutRestart) {
+  EXPECT_EQ(sntp_policy::actionFor(inputs(false, true, false)), Action::Wait);
+}
+
+TEST(XteinkSntpPolicy, AfterAFailedWaitNoRetryInsideTheWindow) {
+  // Every later https request of the same sync session (seconds apart).
+  EXPECT_EQ(sntp_policy::actionFor(inputs(false, true, false, true, 3000)), Action::Skip);
+  EXPECT_EQ(sntp_policy::actionFor(inputs(false, false, true, true, 26000)), Action::Skip);
+  EXPECT_EQ(sntp_policy::actionFor(inputs(false, true, false, true, sntp_policy::RETRY_AFTER_MS - 1)), Action::Skip);
+}
+
+TEST(XteinkSntpPolicy, OneRetryAfterTheWindow) {
+  EXPECT_EQ(sntp_policy::actionFor(inputs(false, true, false, true, sntp_policy::RETRY_AFTER_MS)), Action::Wait);
+  EXPECT_EQ(sntp_policy::actionFor(inputs(false, false, true, true, sntp_policy::RETRY_AFTER_MS)),
+            Action::StartAndWait);
 }
