@@ -69,6 +69,7 @@ add_subdirectory(home_button)
 add_subdirectory(button_press_navigation)
 add_subdirectory(tab_list_nav)
 add_subdirectory(x3_key_profile)
+add_subdirectory(reader_long_press)
 
 add_subdirectory(inflate_stream)
 add_subdirectory(fs_helpers)

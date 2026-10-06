@@ -411,3 +411,30 @@ Checks:
 - [ ] Percent dialog (Go to %): edges change by 1%, 4.3 by -10%, 4.4 by +10%.
 - [ ] Keyboard entry: note which keys move the cursor; the side hints still sit
   at the edges (known: the keyboard's own hint labels were not adapted).
+
+## Reader long-press (d5)
+
+X3 only (X4 keeps its side zoom key and upstream long-press Back). Both holds
+fire at 700 ms while the key is still down; the release is then swallowed, so
+the short-press action does not also run. Policy is host-tested in
+`test/reader_long_press`.
+
+- [ ] Long-press Confirm (4.2) in a book: the zoom scale appears after about
+  0.7 s, before releasing. Releasing does **not** open the reader menu.
+- [ ] Short Confirm still opens the reader menu.
+- [ ] In zoom mode the left/right edge keys step the size smaller/larger;
+  Confirm (short, or held 0.7 s) applies with one reflow at the same passage;
+  Back cancels without a reflow (t14 checks 5 to 9 still hold).
+- [ ] Settings > Controls > Long-Press Menu shows **Zoom** where X4 shows
+  Disabled. Pick Bookmark: long-press Confirm adds a bookmark instead of
+  zooming. Set it back to Zoom.
+- [ ] Long-press Back (4.1): portrait switches to landscape (and back on the
+  next hold); the same passage is on screen; the choice survives leaving and
+  reopening the book (Settings > Reader > Orientation shows it).
+- [ ] From Inverted, a hold goes to Landscape CCW and back to Inverted.
+- [ ] Short Back still leaves the book as before. The long-press Back to the
+  file browser no longer exists on the X3 (use Back Short to File Browser in
+  Settings if needed).
+- [ ] Long-press Back while the end-of-book menu is up does not rotate.
+- [ ] XTC book: long-press Confirm/Back do nothing new (zoom and the rotate
+  hold are EPUB-reader only).

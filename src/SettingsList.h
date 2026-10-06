@@ -187,7 +187,11 @@ inline std::vector<StrId> buildLongPressMenuValues() {
   static constexpr StrId VALUES[] = {StrId::STR_KOSYNC, StrId::STR_DISABLED, StrId::STR_BOOKMARK_OPTION,
                                      StrId::STR_DICTIONARY, StrId::STR_READER_MENU};
   const size_t count = BoardConfig::hasHomeKey() ? std::size(VALUES) : std::size(VALUES) - 1;
-  return {VALUES, VALUES + count};
+  std::vector<StrId> values(VALUES, VALUES + count);
+  // xteink d5: under the X3 key profile the default (Disabled) long press opens
+  // zoom mode (reader_long_press::confirmHoldZooms), so label it that way.
+  if (gpio.deviceIsX3()) values[CrossPointSettings::LP_MENU_DISABLED] = StrId::STR_ZOOM;
+  return values;
 }
 
 inline std::vector<StrId> homeThemeValues() {

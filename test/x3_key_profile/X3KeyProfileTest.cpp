@@ -6,9 +6,9 @@
 #include "src/xteink/X3KeyProfile.h"
 
 namespace x3 = xteink::x3keys;
-using x3::PhysicalKey;
 using tab_list_nav::Key;
 using tab_list_nav::Move;
+using x3::PhysicalKey;
 
 namespace {
 

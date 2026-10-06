@@ -38,6 +38,7 @@
 #include "QrDisplayActivity.h"
 #include "ReaderActivity.h"
 #include "ReaderFontSizes.h"
+#include "ReaderLongPress.h"
 #include "ReaderToolbarUi.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
@@ -594,6 +595,13 @@ void EpubReaderActivity::loop() {
   const bool confirmLongPressed = !endOfBookMenuOpen && confirmHoldMs != 0 &&
                                   mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, confirmHoldMs);
   const bool confirmReleased = mappedInput.wasReleased(MappedInputManager::Button::Confirm);
+  if (confirmLongPressed &&
+      reader_long_press::confirmHoldZooms(mappedInput.hasX3KeyProfile(), SETTINGS.longPressMenuFunction)) {
+    // X3 profile (xteink d5): long-press Confirm opens zoom mode; the release
+    // is swallowed, so the short-press reader menu does not open as well.
+    if (section) enterZoom(true);
+    return;
+  }
   if (confirmLongPressed) {
     switch (SETTINGS.longPressMenuFunction) {
       case CrossPointSettings::LP_MENU_BOOKMARK:
@@ -670,6 +678,15 @@ void EpubReaderActivity::loop() {
     } else {
       openReaderMenu();
     }
+  }
+
+  // X3 profile (xteink d5): long-press Back toggles portrait/landscape. It fires
+  // before the 1 s long-press Back to the file browser, which then stays inert.
+  if (!endOfBookMenuOpen && reader_long_press::backHoldRotates(mappedInput.hasX3KeyProfile()) &&
+      mappedInput.wasLongPressed(MappedInputManager::Button::Back, reader_long_press::HOLD_MS)) {
+    applyOrientation(reader_long_press::toggledOrientation(SETTINGS.orientation));
+    requestUpdate();
+    return;
   }
 
   if (footnoteDepth > 0 && mappedInput.wasReleased(MappedInputManager::Button::Back) &&
@@ -1009,6 +1026,9 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
 }
 
 unsigned long EpubReaderActivity::confirmLongPressThreshold() const {
+  if (reader_long_press::confirmHoldZooms(mappedInput.hasX3KeyProfile(), SETTINGS.longPressMenuFunction)) {
+    return reader_long_press::HOLD_MS;
+  }
   switch (SETTINGS.longPressMenuFunction) {
     case CrossPointSettings::LP_MENU_BOOKMARK:
     case CrossPointSettings::LP_MENU_DICTIONARY:
@@ -2583,6 +2603,9 @@ void EpubReaderActivity::applyReaderTextSettings() {
 
 // --- Zoom mode (xteink fork) -------------------------------------------------
 
+static_assert(reader_long_press::LP_MENU_DISABLED == CrossPointSettings::LP_MENU_DISABLED, "long-press menu value");
+static_assert(reader_long_press::HOLD_MS == ReaderUtils::SKIP_HOLD_MS, "X3 long-press hold");
+
 void EpubReaderActivity::enterZoom(const bool paintNow) {
   // Only the sizes the active family ships are offered (built-in 12/14/16/18,
   // vector 8-22, or the installed .cpfont sizes).
@@ -2614,7 +2637,8 @@ void EpubReaderActivity::handleZoomInput() {
 
   if (mappedInput.wasReleased(Btn::Back)) {
     exitZoom(false);
-  } else if (mappedInput.wasReleased(Btn::Zoom) || mappedInput.wasReleased(Btn::Confirm)) {
+  } else if (mappedInput.wasReleased(Btn::Zoom) || mappedInput.wasReleased(Btn::Confirm) ||
+             mappedInput.wasLongPressed(Btn::Confirm, reader_long_press::HOLD_MS)) {
     exitZoom(true);
   } else if ((larger && zoom.stepLarger()) || (smaller && zoom.stepSmaller())) {
     // Selection only: no reflow, no settings write. Redraw just the scale.
