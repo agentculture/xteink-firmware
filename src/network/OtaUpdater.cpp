@@ -14,12 +14,22 @@
 #include <algorithm>
 #include <cstring>
 #include <string>
+#include <string_view>
 
 #include "FirmwareBoardTag.h"
 #include "FirmwareFlasher.h"
 
 namespace {
-constexpr char latestReleaseUrl[] = "https://api.github.com/repos/crosspoint-reader/crosspoint-reader/releases/latest";
+// xteink fork: OTA comes from this fork's GitHub releases only, never
+// upstream's (docs/xteink/CONTRIBUTING.md). The one place to change the source.
+constexpr std::string_view OTA_RELEASE_REPO = "agentculture/xteink-firmware";
+
+std::string latestReleaseUrl() {
+  std::string url = "https://api.github.com/repos/";
+  url.append(OTA_RELEASE_REPO);
+  url.append("/releases/latest");
+  return url;
+}
 }  // namespace
 
 OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
@@ -48,7 +58,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   }
   char assetName[48] = {};
   bool assetNameSet = false;
-  const bool ok = HttpDownloader::fetchUrl(latestReleaseUrl, [&](const uint8_t* data, size_t len) {
+  const bool ok = HttpDownloader::fetchUrl(latestReleaseUrl(), [&](const uint8_t* data, size_t len) {
     size_t offset = 0;
     while (!assetNameSet && offset < len) {
       releaseParser.feed(reinterpret_cast<const char*>(data + offset), 1);
@@ -96,14 +106,20 @@ bool OtaUpdater::isUpdateNewer() const {
     return false;
   }
 
-  int currentMajor, currentMinor, currentPatch;
-  int latestMajor, latestMinor, latestPatch;
+  int currentMajor = 0, currentMinor = 0, currentPatch = 0;
+  int latestMajor = 0, latestMinor = 0, latestPatch = 0;
 
   const auto currentVersion = CROSSPOINT_VERSION;
 
   // semantic version check (only match on 3 segments)
-  sscanf(latestVersion.c_str(), "%d.%d.%d", &latestMajor, &latestMinor, &latestPatch);
-  sscanf(currentVersion, "%d.%d.%d", &currentMajor, &currentMinor, &currentPatch);
+  // xteink fork: a tag or build version that is not X.Y.Z[...] is never
+  // "newer" (the values were read uninitialized before), so a mis-tagged
+  // release cannot trigger an install.
+  if (sscanf(latestVersion.c_str(), "%d.%d.%d", &latestMajor, &latestMinor, &latestPatch) != 3 ||
+      sscanf(currentVersion, "%d.%d.%d", &currentMajor, &currentMinor, &currentPatch) != 3) {
+    LOG_ERR("OTA", "Unparseable version: latest=%s current=%s", latestVersion.c_str(), currentVersion);
+    return false;
+  }
 
   /*
    * Compare major versions.
