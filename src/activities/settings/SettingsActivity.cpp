@@ -26,6 +26,7 @@
 #include "MappedInputManager.h"
 #include "OpdsServerListActivity.h"
 #include "OtaUpdateActivity.h"
+#include "ProvisionUsbActivity.h"
 #include "SdCardFontSystem.h"
 #include "SdFirmwareUpdateActivity.h"
 #include "SettingsList.h"
@@ -111,6 +112,10 @@ void SettingsActivity::rebuildSettingsLists() {
   systemSettings.push_back(SettingInfo::Action(StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_PLUGINS, SettingAction::Plugins));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_KEYBOARD_LAYOUTS, SettingAction::KeyboardLayouts));
+#ifdef ENABLE_SERIAL_LOG
+  // Provisioning rides the USB serial port, which only slim builds leave unstarted.
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_PROVISION_USB, SettingAction::ProvisionUsb));
+#endif
   systemSettings.push_back(SettingInfo::Action(StrId::STR_ABOUT, SettingAction::About));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
   readerSettings.insert(readerSettings.begin(),
@@ -440,6 +445,15 @@ void SettingsActivity::toggleCurrentSetting() {
           LOG_ERR("SETTINGS", "OOM: KeyboardLayoutsActivity");
         }
         break;
+#ifdef ENABLE_SERIAL_LOG
+      case SettingAction::ProvisionUsb:
+        if (auto activity = makeUniqueNoThrow<ProvisionUsbActivity>(renderer, mappedInput)) {
+          startActivityForResult(std::move(activity), resultHandler);
+        } else {
+          LOG_ERR("SETTINGS", "OOM: ProvisionUsbActivity");
+        }
+        break;
+#endif
       case SettingAction::About:
         if (auto activity = makeUniqueNoThrow<AboutActivity>(renderer, mappedInput)) {
           startActivityForResult(std::move(activity), nullptr);
