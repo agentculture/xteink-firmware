@@ -26,8 +26,8 @@ bool shouldBootAfterReset(const bool classifiedAsPowerButton, const bool holdVer
     in.millivolts = status.millivolts;
   }
   const bool boot = bootAfterReset(in);
-  LOG_INF("MAIN", "Power-on without held button: battery %s%u%% %umV -> %s",
-          in.percentKnown ? "" : "unknown ", static_cast<unsigned>(in.percent), static_cast<unsigned>(in.millivolts),
+  LOG_INF("MAIN", "Power-on without held button: battery %s%u%% %umV -> %s", in.percentKnown ? "" : "unknown ",
+          static_cast<unsigned>(in.percent), static_cast<unsigned>(in.millivolts),
           boot ? "reset key, booting" : "sleeping");
   return boot;
 }

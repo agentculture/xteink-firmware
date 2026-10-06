@@ -473,3 +473,37 @@ Checks (serial log at 115200):
   the device asleep and the log says `-> sleeping`; no repeated boots.
 - [ ] Ten top-key presses in a row: each boots once, no boot loop, no crash
   screen.
+
+## Line scroll (d3)
+
+X3 key profile, EPUB reader only: 4.3 (Up) moves the view one line back, 4.4
+(Down) one line forward. The window is built from the two cached pages (the
+page on screen and the next one): no reflow, pagination unchanged. Window
+logic: `src/activities/reader/LineWindow.h`, host tests in `test/line_window`.
+
+- [ ] Press 4.4 once: the top line disappears, the text moves up one line and
+  the first line of the next page appears at the bottom. Line spacing at the
+  seam looks the same as elsewhere on the page.
+- [ ] Press 4.4 twice, then the right edge (next page): the new page is also
+  shifted by two lines (its first two lines are the ones already seen at the
+  bottom). The left edge goes back by a page with the same offset.
+- [ ] Press 4.3 after scrolling down: the text moves back one line. From an
+  unscrolled page, 4.3 shows the previous page's last line on top.
+- [ ] Hold-free repeat: 30 presses of 4.4 walk past a page boundary with no
+  skipped or repeated line (compare with a normal page turn).
+- [ ] Image: scrolling past an image takes it off the top in one step; an image
+  at the top of the next page appears only once it fits (the bottom stays blank
+  until then).
+- [ ] Refresh: each step is a fast partial refresh; after the configured number
+  of steps/turns (Settings > Refresh Frequency) a half refresh clears ghosting.
+  Note any ghosting left after 20 steps.
+- [ ] The offset resets to the page top on zoom (enter and leave), rotation
+  (long-press Back or the menu), Go to %, chapter select, bookmarks and links.
+- [ ] Last page of a chapter: it shows unscrolled (no lines are lost, a few may
+  repeat); 4.4 there does nothing; the right edge goes to the next chapter at the
+  top.
+- [ ] Reading position after a scroll survives leaving and reopening the book
+  (it reopens at the top of the page the window started on).
+- [ ] XTC book: 4.3/4.4 do nothing; pages only.
+- [ ] Free heap in the `MEM` log line while scrolling stays within a few KB of
+  plain page turns (two pages resident during a scrolled render).

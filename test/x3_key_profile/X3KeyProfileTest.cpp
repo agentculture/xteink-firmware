@@ -40,18 +40,25 @@ struct Row {
   bool settingsKnown;  // directional on a tabbed list
   Move settings;
   int readerPage;  // reader page step: -1 previous, +1 next
+  int readerLine;  // reader line scroll (d3): -1 one line back, +1 one line forward
 };
+
+// Reader line step of a slot: the EPUB reader feeds logical Up/Down through
+// listStep (EpubReaderActivity::loop, X3 profile).
+int readerLineStep(const uint8_t slot, const bool swapped) {
+  return (slot == x3::UP || slot == x3::DOWN) ? x3::listStep(slot, swapped) : 0;
+}
 
 // The X3 profile, portrait (no orientation swap). Back/Confirm keep their
 // screen-specific meaning (Home: open last book / select; Settings: back /
 // toggle; reader: back / menu) and never move a list.
 constexpr Row kTable[] = {
-    {PhysicalKey::LeftEdge, x3::LEFT, -1, true, Move::TabPrevious, -1},
-    {PhysicalKey::RightEdge, x3::RIGHT, +1, true, Move::TabNext, +1},
-    {PhysicalKey::Bottom1, x3::BACK, 0, false, Move::TabPrevious, 0},
-    {PhysicalKey::Bottom2, x3::CONFIRM, 0, false, Move::TabPrevious, 0},
-    {PhysicalKey::Bottom3, x3::UP, -1, true, Move::RowPrevious, 0},
-    {PhysicalKey::Bottom4, x3::DOWN, +1, true, Move::RowNext, 0},
+    {PhysicalKey::LeftEdge, x3::LEFT, -1, true, Move::TabPrevious, -1, 0},
+    {PhysicalKey::RightEdge, x3::RIGHT, +1, true, Move::TabNext, +1, 0},
+    {PhysicalKey::Bottom1, x3::BACK, 0, false, Move::TabPrevious, 0, 0},
+    {PhysicalKey::Bottom2, x3::CONFIRM, 0, false, Move::TabPrevious, 0, 0},
+    {PhysicalKey::Bottom3, x3::UP, -1, true, Move::RowPrevious, 0, -1},
+    {PhysicalKey::Bottom4, x3::DOWN, +1, true, Move::RowNext, 0, +1},
 };
 
 }  // namespace
@@ -78,6 +85,7 @@ TEST(X3KeyProfileTest, PhysicalKeyToLogicalToEffect) {
       EXPECT_EQ(move, row.settings);
     }
     EXPECT_EQ(x3::readerPageStep(slot, false), row.readerPage);
+    EXPECT_EQ(readerLineStep(slot, false), row.readerLine);
   }
 }
 

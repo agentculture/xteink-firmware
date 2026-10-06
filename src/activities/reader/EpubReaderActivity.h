@@ -56,6 +56,25 @@ class EpubReaderActivity final : public ReaderActivity {
   unsigned long bookmarkMessageTime = 0UL;
   bool pendingReadFolderMove = false;
 
+  // Line scroll (xteink d3, X3 key profile, LineWindow.h): the window is
+  // (section->currentPage, lineOffset), valid only while the anchor matches the
+  // page on screen; any other navigation (go-to, chapter, reflow) drops it.
+  int lineOffset = 0;
+  int lineAnchorSpine = -1;
+  int lineAnchorPage = -1;
+  int lineUnits = 0;  // units of the anchor page, from its last render
+  bool linePendingBack = false;
+  bool lineAnchorValid() const;
+  void lineScroll(int step);
+  void carryLineOffsetAfterTurn(int spineBefore);
+  void resetLineScroll() {
+    lineOffset = 0;
+    linePendingBack = false;
+    lineAnchorPage = -1;
+  }
+  // Applies the window to the loaded page in place (renderBook's page).
+  void composeLineWindow(Page& page);
+
   // Zoom mode (xteink fork): the zoom key shows a point-size scale over the
   // page; Left/Right only move the selection, and the book reflows once on exit.
   ZoomMode zoom;

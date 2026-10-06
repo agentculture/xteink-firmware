@@ -71,6 +71,7 @@ add_subdirectory(tab_list_nav)
 add_subdirectory(x3_key_profile)
 add_subdirectory(reader_long_press)
 add_subdirectory(reset_boot)
+add_subdirectory(line_window)
 
 add_subdirectory(inflate_stream)
 add_subdirectory(fs_helpers)

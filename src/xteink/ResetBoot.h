@@ -17,12 +17,12 @@ inline constexpr uint16_t MIN_BATTERY_PERCENT = 3;
 inline constexpr uint16_t MIN_BATTERY_MV = 3400;
 
 struct Inputs {
-  bool x3 = false;               // runtime X3 detection (the only board with a RESET key)
-  bool powerOnReset = false;     // esp_reset_reason() == ESP_RST_POWERON
-  bool sleepWakeCause = false;   // esp_sleep_get_wakeup_cause() != UNDEFINED
+  bool x3 = false;                       // runtime X3 detection (the only board with a RESET key)
+  bool powerOnReset = false;             // esp_reset_reason() == ESP_RST_POWERON
+  bool sleepWakeCause = false;           // esp_sleep_get_wakeup_cause() != UNDEFINED
   bool classifiedAsPowerButton = false;  // HalGPIO::getWakeupReason() == PowerButton
-  bool holdVerified = false;     // HalGPIO::verifyPowerButtonWakeup() passed
-  bool percentKnown = false;     // fuel gauge read succeeded
+  bool holdVerified = false;             // HalGPIO::verifyPowerButtonWakeup() passed
+  bool percentKnown = false;             // fuel gauge read succeeded
   uint16_t percent = 0;
   bool millivoltsKnown = false;
   uint16_t millivolts = 0;
