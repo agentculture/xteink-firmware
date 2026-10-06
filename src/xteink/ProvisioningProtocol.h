@@ -22,8 +22,8 @@ constexpr size_t kMaxLineLen = 3072;
 constexpr size_t kMaxJsonLen = 2048;
 
 // Limits applied to decoded fields.
-constexpr size_t kMaxNetworks = 8;  // mirrors WifiCredentialStore::MAX_NETWORKS
-constexpr size_t kMaxSsidLen = 32;  // 802.11 SSID limit
+constexpr size_t kMaxNetworks = 8;      // mirrors WifiCredentialStore::MAX_NETWORKS
+constexpr size_t kMaxSsidLen = 32;      // 802.11 SSID limit
 constexpr size_t kMaxPasswordLen = 64;  // mirrors WifiCredentialStore::MAX_PASSWORD_LENGTH
 constexpr size_t kMaxUrlLen = 200;
 constexpr size_t kMaxKeyLen = 128;

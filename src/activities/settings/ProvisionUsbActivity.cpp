@@ -177,8 +177,7 @@ void ProvisionUsbActivity::render(RenderLock&&) {
       renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 20, buf);
     }
   } else {
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 10, tr(STR_PROVISION_WAITING), true,
-                              EpdFontFamily::BOLD);
+    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 10, tr(STR_PROVISION_WAITING), true, EpdFontFamily::BOLD);
     if (lastError) {
       // Wire error codes are protocol identifiers, shown as-is.
       snprintf(buf, sizeof(buf), "%s", lastError);

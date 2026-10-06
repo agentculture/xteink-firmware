@@ -34,6 +34,6 @@ class ProvisionUsbActivity final : public Activity {
 
   bool provisioned = false;
   size_t networksSaved = 0;
-  std::string keyId;       // 8 hex chars, shown on screen (not secret)
+  std::string keyId;  // 8 hex chars, shown on screen (not secret)
   const char* lastError = nullptr;
 };

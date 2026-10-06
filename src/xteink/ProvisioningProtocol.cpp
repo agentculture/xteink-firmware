@@ -54,8 +54,8 @@ std::string encodeBase64(const std::string& in) {
   out.reserve((in.size() + 2) / 3 * 4);
   size_t i = 0;
   for (; i + 2 < in.size(); i += 3) {
-    const uint32_t t = (static_cast<uint8_t>(in[i]) << 16) | (static_cast<uint8_t>(in[i + 1]) << 8) |
-                       static_cast<uint8_t>(in[i + 2]);
+    const uint32_t t =
+        (static_cast<uint8_t>(in[i]) << 16) | (static_cast<uint8_t>(in[i + 1]) << 8) | static_cast<uint8_t>(in[i + 2]);
     out += kTable[(t >> 18) & 63];
     out += kTable[(t >> 12) & 63];
     out += kTable[(t >> 6) & 63];

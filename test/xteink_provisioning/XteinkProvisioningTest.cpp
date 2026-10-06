@@ -13,8 +13,8 @@ std::string b64(const std::string& in) {
   std::string o;
   size_t i = 0;
   for (; i + 2 < in.size(); i += 3) {
-    unsigned v = (static_cast<uint8_t>(in[i]) << 16) | (static_cast<uint8_t>(in[i + 1]) << 8) |
-                 static_cast<uint8_t>(in[i + 2]);
+    unsigned v =
+        (static_cast<uint8_t>(in[i]) << 16) | (static_cast<uint8_t>(in[i + 1]) << 8) | static_cast<uint8_t>(in[i + 2]);
     o += t[v >> 18 & 63];
     o += t[v >> 12 & 63];
     o += t[v >> 6 & 63];
@@ -181,7 +181,7 @@ TEST(Provisioning, ReplyLines) {
   std::vector<char> buf(asRequest.begin(), asRequest.end());
   Request r;
   EXPECT_EQ(parseLine(buf.data(), buf.size(), r), Error::None);  // valid JSON object, unknown fields ignored
-  EXPECT_LT(ack.size(), 256u);  // fits HWCDC's 256 B TX path in one write
+  EXPECT_LT(ack.size(), 256u);                                   // fits HWCDC's 256 B TX path in one write
 }
 
 TEST(Provisioning, AckNeverContainsSecrets) {
