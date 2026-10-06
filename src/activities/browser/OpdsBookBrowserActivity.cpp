@@ -29,6 +29,7 @@
 #include "components/UITheme.h"
 #include "components/icons/opdsIcons.h"
 #include "network/HttpDownloader.h"
+#include "network/LcpDevice.h"
 #include "util/BookCacheUtils.h"
 #include "util/OpdsFilename.h"
 #include "util/UrlUtils.h"
@@ -642,36 +643,55 @@ void OpdsBookBrowserActivity::downloadLcpBook(const OpdsEntry& book) {
 // One /unlock round trip with an already-derived user-key hash. Terminal
 // failures (unsupported profile, network, key store) call fail() themselves.
 OpdsBookBrowserActivity::LcpUnlock OpdsBookBrowserActivity::requestLcpUnlock(const std::string& userKeyHex) {
-  std::string request;
-  request.reserve(pendingLcpLicenseText.size() + 96);
-  request += "{\"user_key\":\"";
-  request += userKeyHex;
-  request += "\",\"license\":";
-  request += pendingLcpLicenseText;  // verbatim: it parsed as JSON at download time
-  request += '}';
-
-  std::string response;
-  int status = 0;
   statusMessage = tr(STR_LOADING);
   requestUpdate(true);
-  const bool ok = HttpDownloader::postForm(freeink::content::LCP_UNLOCK_URL, request, response, &status);
-  if (status == 403) return LcpUnlock::WrongPassphrase;
-  if (status == 422) {
-    fail(StrId::STR_LCP_UNSUPPORTED);
+
+  std::string deviceId;
+  bool notEnrollable = false;
+  if (!lcpdevice::ensureEnrolled(deviceId, notEnrollable)) {
+    fail(notEnrollable ? StrId::STR_LCP_OFFICIAL_BUILD : StrId::STR_DOWNLOAD_FAILED);
     return LcpUnlock::Failed;
   }
-  int64_t expiresAt = 0;
-  uint8_t contentKey[32];
-  if (!ok || !parseUnlockResponse(response, contentKey, &expiresAt)) {
-    LOG_ERR("OPDS", "LCP unlock failed (status %d)", status);
-    fail(StrId::STR_DOWNLOAD_FAILED);
-    return LcpUnlock::Failed;
+
+  // Up to two attempts: a 401 means the registry no longer knows this device
+  // (revoked or reset), so re-enroll fresh once and retry.
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    std::string request;
+    request.reserve(pendingLcpLicenseText.size() + 160);
+    request += "{\"device_id\":\"";
+    request += deviceId;
+    request += "\",\"user_key\":\"";
+    request += userKeyHex;
+    request += "\",\"license\":";
+    request += pendingLcpLicenseText;  // verbatim: it parsed as JSON at download time
+    request += '}';
+
+    std::string response;
+    int status = 0;
+    const bool ok = HttpDownloader::postForm(freeink::content::LCP_UNLOCK_URL, request, response, &status);
+    if (status == 401 && attempt == 0) {
+      lcpdevice::forget();
+      if (!lcpdevice::ensureEnrolled(deviceId, notEnrollable)) break;
+      continue;
+    }
+    if (status == 403) return LcpUnlock::WrongPassphrase;
+    if (status == 422) {
+      fail(StrId::STR_LCP_UNSUPPORTED);
+      return LcpUnlock::Failed;
+    }
+    LcpWrappedKey wrapped;
+    int64_t expiresAt = 0;
+    uint8_t contentKey[32];
+    if (!ok || !parseUnlockResponse(response, &wrapped, &expiresAt) ||
+        !lcpdevice::unwrapContentKey(wrapped.epk, wrapped.iv, wrapped.ct, wrapped.tag, contentKey)) {
+      LOG_ERR("OPDS", "LCP unlock failed (status %d)", status);
+      break;
+    }
+    if (!bookkey::write(pendingLcpPath, contentKey, sizeof(contentKey), expiresAt)) break;
+    return LcpUnlock::Ok;
   }
-  if (!bookkey::write(pendingLcpPath, contentKey, sizeof(contentKey), expiresAt)) {
-    fail(StrId::STR_DOWNLOAD_FAILED);
-    return LcpUnlock::Failed;
-  }
-  return LcpUnlock::Ok;
+  fail(StrId::STR_DOWNLOAD_FAILED);
+  return LcpUnlock::Failed;
 }
 
 // Entry point after fulfillment: a hash saved for this provider skips the
@@ -742,14 +762,16 @@ void OpdsBookBrowserActivity::promptLcpPassphrase(const bool retry) {
   });
 }
 
-// {content_key: <base64 32 bytes>, expires: <epoch seconds>} from /unlock.
-bool OpdsBookBrowserActivity::parseUnlockResponse(const std::string& response, uint8_t contentKey[32],
+// {content_key: {epk, iv, ct, tag}, expires: <epoch seconds>} from /unlock;
+// the key stays wrapped here and is opened by lcpdevice::unwrapContentKey.
+bool OpdsBookBrowserActivity::parseUnlockResponse(const std::string& response, LcpWrappedKey* wrapped,
                                                   int64_t* expiresAt) {
   struct Ctx {
     char pending[16] = {0};
-    std::string keyB64;
+    LcpWrappedKey* out = nullptr;
     int64_t expires = 0;
   } ctx;
+  ctx.out = wrapped;
   JsonCallbacks callbacks = {};
   callbacks.ctx = &ctx;
   callbacks.onKey = [](void* ud, const char* key, size_t len) {
@@ -760,7 +782,11 @@ bool OpdsBookBrowserActivity::parseUnlockResponse(const std::string& response, u
   };
   callbacks.onString = [](void* ud, const char* value, size_t len) {
     auto& c = *static_cast<Ctx*>(ud);
-    if (strcmp(c.pending, "content_key") == 0) c.keyB64.assign(value, len < 128 ? len : 128);
+    const size_t n = len < 128 ? len : 128;
+    if (strcmp(c.pending, "epk") == 0) c.out->epk.assign(value, n);
+    if (strcmp(c.pending, "iv") == 0) c.out->iv.assign(value, n);
+    if (strcmp(c.pending, "ct") == 0) c.out->ct.assign(value, n);
+    if (strcmp(c.pending, "tag") == 0) c.out->tag.assign(value, n);
   };
   callbacks.onNumber = [](void* ud, const char* value, size_t) {
     auto& c = *static_cast<Ctx*>(ud);
@@ -774,8 +800,9 @@ bool OpdsBookBrowserActivity::parseUnlockResponse(const std::string& response, u
   callbacks.onArrayEnd = [](void*) {};
   StreamingJsonParser parser(callbacks);
   parser.feed(response.data(), response.size());
-  if (parser.hasError() || ctx.keyB64.empty()) return false;
-  if (freeink::content::base64Decode(ctx.keyB64.data(), ctx.keyB64.size(), contentKey, 32) != 32) return false;
+  if (parser.hasError() || wrapped->epk.empty() || wrapped->iv.empty() || wrapped->ct.empty() || wrapped->tag.empty()) {
+    return false;
+  }
   *expiresAt = ctx.expires > 0 ? ctx.expires : 0;
   return true;
 }
