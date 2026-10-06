@@ -374,8 +374,8 @@ in `MappedInputManager`). X4 builds and X4 units are unchanged. Host test:
 | Right edge | adc2 ~2 | Right | selection down | next tab | next page |
 | Bottom 4.1 | adc1 ~3515 | Back | open last book | back | back (long: rotate, d5) |
 | Bottom 4.2 | adc1 ~2686 | Confirm | select | toggle / open | menu (long: zoom, d5) |
-| Bottom 4.3 | adc1 ~1486 | Up | selection up | row up | line back (d3) |
-| Bottom 4.4 | adc1 ~0 | Down | selection down | row down | line forward (d3) |
+| Bottom 4.3 | adc1 ~1486 | Up | selection up | row up | paragraph back (d3) |
+| Bottom 4.4 | adc1 ~0 | Down | selection down | row down | paragraph forward (d3) |
 | Top regular key | none | chip RESET | reboots (see Reset boot) | | |
 
 How the existing settings combine with the profile:
@@ -474,29 +474,40 @@ Checks (serial log at 115200):
 - [ ] Ten top-key presses in a row: each boots once, no boot loop, no crash
   screen.
 
-## Line scroll (d3)
+## Paragraph scroll (d3)
 
-X3 key profile, EPUB reader only: 4.3 (Up) moves the view one line back, 4.4
-(Down) one line forward. The window is built from the two cached pages (the
-page on screen and the next one): no reflow, pagination unchanged. Window
-logic: `src/activities/reader/LineWindow.h`, host tests in `test/line_window`.
+X3 key profile, EPUB reader only: 4.4 (Down) skips the rest of the paragraph
+at the top so the next paragraph starts at the top of the screen; 4.3 (Up)
+brings the start of the paragraph above back to the top. (First built as one
+line per press; changed to one paragraph per press on operator request,
+2026-10-07.) A paragraph starts at a line whose gap from the line above is
+wider than the line pitch (more than 1.25 lines): "Extra paragraph spacing"
+(Settings > Reader, on by default) adds half a line between paragraphs, and
+CSS margins, headings and images widen gaps too. The window is built from the
+two cached pages (the page on screen and the next one): no reflow, pagination
+unchanged. Window logic: `src/activities/reader/LineWindow.h`, host tests in
+`test/line_window`.
 
-- [ ] Press 4.4 once: the top line disappears, the text moves up one line and
-  the first line of the next page appears at the bottom. Line spacing at the
-  seam looks the same as elsewhere on the page.
-- [ ] Press 4.4 twice, then the right edge (next page): the new page is also
-  shifted by two lines (its first two lines are the ones already seen at the
-  bottom). The left edge goes back by a page with the same offset.
-- [ ] Press 4.3 after scrolling down: the text moves back one line. From an
-  unscrolled page, 4.3 shows the previous page's last line on top.
-- [ ] Hold-free repeat: 30 presses of 4.4 walk past a page boundary with no
-  skipped or repeated line (compare with a normal page turn).
-- [ ] Image: scrolling past an image takes it off the top in one step; an image
-  at the top of the next page appears only once it fits (the bottom stays blank
-  until then).
+- [ ] Press 4.4 once: the paragraph at the top disappears, the next paragraph
+  is now the top line, and lines of the next page fill the bottom. Line
+  spacing at the seam looks like normal line spacing.
+- [ ] Press 4.4 on the last paragraph of a page: the view goes to the top of
+  the next page (the page's top line is treated as a paragraph start, so a
+  paragraph continued from the previous page shows its tail first; no text
+  is skipped).
+- [ ] Press 4.3 after scrolling down: the start of the paragraph above is on
+  top again. From an unscrolled page, 4.3 shows the start of the previous
+  page's last paragraph on top.
+- [ ] Press 4.4 twice, then the right edge (next page): the new page keeps the
+  same line offset (not paragraph-aligned). Then 4.3 aligns to the start of
+  the paragraph at the top.
+- [ ] "Extra paragraph spacing" off: there are no paragraph gaps to find, so
+  4.4 acts as a page turn and 4.3 goes to the page top / previous page top.
+- [ ] Image: an image counts as its own paragraph; scrolling past it takes it
+  off the top in one step; an image at the top of the next page appears only
+  once it fits (the bottom stays blank until then).
 - [ ] Refresh: each step is a fast partial refresh; after the configured number
   of steps/turns (Settings > Refresh Frequency) a half refresh clears ghosting.
-  Note any ghosting left after 20 steps.
 - [ ] The offset resets to the page top on zoom (enter and leave), rotation
   (long-press Back or the menu), Go to %, chapter select, bookmarks and links.
 - [ ] Last page of a chapter: it shows unscrolled (no lines are lost, a few may

@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
-// xteink fork (d3): line scrolling over the cached pagination. A window is
+// xteink fork (d3): paragraph scrolling over the cached pagination. A window is
 // (page P, offset N): page P with its first N lines scrolled off the top and
 // the first lines of page P+1 filling the gap at the bottom. Layout and
 // pagination are untouched; the reader only moves the already laid-out
@@ -40,6 +40,73 @@ constexpr size_t unitStart(const Element* els, const size_t count, const int uni
   return count;
 }
 
+// A window: page P with its first `offset` units scrolled off.
+struct Position {
+  int page;
+  int offset;
+};
+
+// Line pitch of a page: the smallest gap between two consecutive units (plain
+// text lines sit exactly one pitch apart; paragraph spacing, headings and
+// images only widen a gap). `fallback` when the page has fewer than two units.
+constexpr int linePitch(const Element* els, const size_t count, const int fallback) {
+  int pitch = 0;
+  size_t prev = 0;
+  for (size_t i = 1; i < count; ++i) {
+    if (els[i].y == els[i - 1].y) continue;
+    const int gap = els[i].y - els[prev].y;
+    if (gap > 0 && (pitch == 0 || gap < pitch)) pitch = gap;
+    prev = i;
+  }
+  return pitch > 0 ? pitch : fallback;
+}
+
+// Paragraph scroll (xteink d3, operator request 2026-10-07): a paragraph starts
+// at a unit whose gap from the unit above is wider than a line pitch, i.e. a
+// line with (part of) an empty line before it. "Extra paragraph spacing" (on by
+// default) adds half a line; CSS margins and images widen gaps too. Unit 0 is
+// treated as a start: whether P begins a paragraph or continues one from P-1
+// cannot be read from the layout (the paginator resets y at a page break), and
+// treating it as a start never skips text.
+constexpr bool isParagraphStart(const Element* els, const size_t count, const int unit, const int pitch) {
+  if (unit <= 0) return true;
+  const size_t at = unitStart(els, count, unit);
+  if (at >= count) return false;
+  const size_t above = unitStart(els, count, unit - 1);
+  return (els[at].y - els[above].y) * 4 > pitch * 5;  // more than 1.25 pitch
+}
+
+// First paragraph start after unit `offset` on the page, or -1 when the rest of
+// the page belongs to the paragraph at `offset`.
+constexpr int nextParagraph(const Element* els, const size_t count, const int offset, const int fallbackPitch) {
+  const int units = unitCount(els, count);
+  const int pitch = linePitch(els, count, fallbackPitch);
+  for (int u = (offset < 0 ? 0 : offset) + 1; u < units; ++u) {
+    if (isParagraphStart(els, count, u, pitch)) return u;
+  }
+  return -1;
+}
+
+// Last paragraph start before unit `before` (pass unitCount() for "the last
+// paragraph on the page"); 0 at worst, -1 when `before` <= 0.
+constexpr int prevParagraph(const Element* els, const size_t count, const int before, const int fallbackPitch) {
+  if (before <= 0) return -1;
+  const int units = unitCount(els, count);
+  const int pitch = linePitch(els, count, fallbackPitch);
+  for (int u = (before > units ? units : before) - 1; u > 0; --u) {
+    if (isParagraphStart(els, count, u, pitch)) return u;
+  }
+  return 0;
+}
+
+// Window position after a one-paragraph step forward from (P, offset): the next
+// paragraph start on P, else the top of P+1. No P+1 in the section: unchanged.
+constexpr Position paragraphForward(const Position at, const int nextOnPage, const bool hasNext) {
+  if (!hasNext) return at;
+  if (nextOnPage > at.offset) return {at.page, nextOnPage};
+  return {at.page + 1, 0};
+}
+
 struct Plan {
   bool valid = false;    // false: render the page as is
   size_t firstKept = 0;  // elements [firstKept, curCount) of P stay
@@ -59,15 +126,10 @@ constexpr Plan plan(const Element* cur, const size_t curCount, const Element* ne
   const int units = unitCount(cur, curCount);
   if (offset >= units) return out;
 
-  // Line pitch: the gap between P's last two lines, else P+1's first two.
-  int pitch = fallbackPitch;
+  // Line pitch: the smallest line-to-line gap on P (a paragraph gap is wider),
+  // else on P+1.
+  const int pitch = linePitch(cur, curCount, linePitch(next, nextCount, fallbackPitch));
   const size_t lastStart = unitStart(cur, curCount, units - 1);
-  if (units >= 2) {
-    pitch = cur[lastStart].y - cur[unitStart(cur, curCount, units - 2)].y;
-  } else if (unitCount(next, nextCount) >= 2) {
-    pitch = next[unitStart(next, nextCount, 1)].y - next[0].y;
-  }
-  if (pitch <= 0) pitch = fallbackPitch;
 
   int bottom = 0;  // lowest extent of P's content (its usable area)
   for (size_t i = 0; i < curCount; ++i) {
@@ -96,27 +158,6 @@ constexpr Plan plan(const Element* cur, const size_t curCount, const Element* ne
   out.nextTaken = taken;
   out.valid = true;
   return out;
-}
-
-// Window position after a one-line step. `units` is unitCount() of page P
-// (the page of the current window); `hasNext` whether P+1 exists in this
-// section. Backward from offset 0 needs P-1's unit count (prevUnits, < 0 when
-// there is no P-1 in this section).
-struct Position {
-  int page;
-  int offset;
-};
-
-constexpr Position stepForward(const Position at, const int units, const bool hasNext) {
-  if (!hasNext) return at;  // last page of the section: nothing below
-  if (at.offset + 1 < units) return {at.page, at.offset + 1};
-  return {at.page + 1, 0};
-}
-
-constexpr Position stepBackward(const Position at, const int prevUnits) {
-  if (at.offset > 0) return {at.page, at.offset - 1};
-  if (prevUnits <= 0) return at;  // first page of the section
-  return {at.page - 1, prevUnits - 1};
 }
 
 // Offset carried across a page turn: kept, but clamped to the new page, and
