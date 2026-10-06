@@ -360,3 +360,54 @@ Record for each physical key: its position, the `adc1`/`adc2`/`pwr` values
 and the decoded name. Check especially the top regular key (reported as no
 reaction or a lock-up until Power) and which key, if any, decodes as Up (the
 default zoom key, t14).
+
+## X3 key profile (d5)
+
+On a unit detected as X3 (`[MAIN] Hardware detect: X3`), the firmware reads
+the keys through the X3 key profile (`src/xteink/X3KeyProfile.h`, applied once
+in `MappedInputManager`). X4 builds and X4 units are unchanged. Host test:
+`test/x3_key_profile`.
+
+| Physical key | Raw (XKEY) | Logical | Home | Settings (tabbed) | Reader |
+|--------------|-----------|---------|------|-------------------|--------|
+| Left edge | adc2 ~2222 | Left | selection up | previous tab | previous page |
+| Right edge | adc2 ~2 | Right | selection down | next tab | next page |
+| Bottom 4.1 | adc1 ~3515 | Back | open last book | back | back (long: rotate, d5) |
+| Bottom 4.2 | adc1 ~2686 | Confirm | select | toggle / open | menu (long: zoom, d5) |
+| Bottom 4.3 | adc1 ~1486 | Up | selection up | row up | line back (d3) |
+| Bottom 4.4 | adc1 ~0 | Down | selection down | row down | line forward (d3) |
+| Top regular key | none | chip RESET | reboots (see Reset boot) | | |
+
+How the existing settings combine with the profile:
+
+- **Front button remap** (Settings > Controls > Remap): remaps Back, Confirm,
+  Left and Right among 4.1, 4.2 and the two edge keys. The remap screen only
+  accepts those four keys. 4.3/4.4 stay Up/Down, and the preview shows no label
+  over them.
+- **Side Button Layout** and **Zoom Button (Reader)** are hidden on the X3:
+  there is no side page-turn key (pages turn with the edge keys) and zoom is
+  long-press Confirm. Saved values are kept and still apply on an X4.
+- **Front buttons follow orientation** and the touch-style orientation swap
+  (`isNavDirectionSwapped`) flip the logical axes on top of the profile, as
+  on the X4.
+- Raw-index combos are not remapped: screenshot is Power + right edge, and
+  recovery mode at boot is Power + 4.3 (logical Up).
+
+Checks:
+
+- [ ] Home: 4.3 moves the selection up, 4.4 moves it down. The edge keys also
+  move it (left up, right down). Confirm opens, Back opens the last book.
+- [ ] Settings: left/right edge switch tabs; 4.3/4.4 move between rows; the
+  hints over 4.3/4.4 read Up/Down.
+- [ ] A plain list (Library, file browser, reader menu): 4.3/4.4 and the edges
+  move the selection.
+- [ ] Reader: left edge previous page, right edge next page; 4.3/4.4 do not turn
+  pages.
+- [ ] Remap: swap Left and Right in Settings > Controls > Remap; the edges swap
+  in the reader and on tabs. Reset with 4.3 (Up) restores the default.
+- [ ] Settings > Controls has no Side Button Layout and no Zoom Button entry.
+- [ ] Reader rotated to Inverted with Front buttons follow orientation on: the
+  edge keys swap previous/next, and 4.3/4.4 swap up/down in lists.
+- [ ] Percent dialog (Go to %): edges change by 1%, 4.3 by -10%, 4.4 by +10%.
+- [ ] Keyboard entry: note which keys move the cursor; the side hints still sit
+  at the edges (known: the keyboard's own hint labels were not adapted).

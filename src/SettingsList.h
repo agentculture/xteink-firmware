@@ -3,6 +3,7 @@
 #include <BoardConfig.h>
 #include <HalClock.h>
 #include <HalFrontlight.h>
+#include <HalGPIO.h>
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <SdCardFontRegistry.h>
@@ -567,6 +568,16 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
   // Frontlit and lightless variants of a board share one binary (EEGO A4);
   // presence is the I2C probe result from Frontlight.begin(). UI-only: the probe
   // has not run at load time, so persistence must keep the key (forPersistence).
+  // xteink d5: the X3 key profile has no side page-turn or zoom key (Left/Right
+  // on the edge keys turn pages, Up/Down scroll lines), so both settings are
+  // inert there. UI-only, like the frontlight filter: saved values are kept.
+  if (!forPersistence && gpio.deviceIsX3()) {
+    v.erase(std::remove_if(v.begin(), v.end(),
+                           [](const SettingInfo& s) {
+                             return s.nameId == StrId::STR_SIDE_BTN_LAYOUT || s.nameId == StrId::STR_ZOOM_BUTTON;
+                           }),
+            v.end());
+  }
   if (!forPersistence && !Frontlight.present()) {
     v.erase(std::remove_if(v.begin(), v.end(),
                            [](const SettingInfo& s) { return s.nameId == StrId::STR_RESTORE_LIGHT_ON_WAKE; }),

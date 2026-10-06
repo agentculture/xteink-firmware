@@ -138,10 +138,13 @@ void ButtonRemapActivity::render(RenderLock&&) {
 
   // Live preview of logical labels under front buttons.
   // This mirrors the on-device front button order: Back, Confirm, Left, Right.
+  // Under the X3 key profile (xteink d5) the Left/Right slots are the edge
+  // keys, so bottom keys 3/4 (fixed Up/Down) get no preview label.
+  const bool x3Profile = mappedInput.hasX3KeyProfile();
   GUI.drawButtonHints(renderer, labelForHardware(CrossPointSettings::FRONT_HW_BACK),
                       labelForHardware(CrossPointSettings::FRONT_HW_CONFIRM),
-                      labelForHardware(CrossPointSettings::FRONT_HW_LEFT),
-                      labelForHardware(CrossPointSettings::FRONT_HW_RIGHT));
+                      x3Profile ? "" : labelForHardware(CrossPointSettings::FRONT_HW_LEFT),
+                      x3Profile ? "" : labelForHardware(CrossPointSettings::FRONT_HW_RIGHT));
   renderer.displayBuffer();
 }
 
