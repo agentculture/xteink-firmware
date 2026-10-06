@@ -47,6 +47,7 @@
 #include "util/Timezones.h"
 #include "xteink/KeyDiag.h"
 #include "xteink/ProvisioningProtocol.h"
+#include "xteink/ResetBoot.h"
 
 #if CROSSPOINT_VECTOR_FONTS
 // Rendering (incl. FreeType TTF rasterization) runs on the Arduino loop task.
@@ -478,12 +479,20 @@ void setup() {
   gpio.begin();
   powerManager.begin();
 
-  const auto wakeupReason = gpio.getWakeupReason();
+  const auto detectedWakeupReason = gpio.getWakeupReason();
   // Sample the wake hold now — a click wake is released within milliseconds of
   // boot — but defer the sleep-or-boot decision until SETTINGS is loaded below:
   // click-to-wake is a setting, and an X4 battery power-off cuts all power, so
   // only SD state survives to the next boot.
-  const bool wakeHoldVerified = wakeupReason != HalGPIO::WakeupReason::PowerButton || gpio.verifyPowerButtonWakeup();
+  const bool wakeHoldVerified =
+      detectedWakeupReason != HalGPIO::WakeupReason::PowerButton || gpio.verifyPowerButtonWakeup();
+  // xteink d5: the X3's top key resets the chip (POWERON, no wake cause), which
+  // upstream reads as an unheld power-button boot and puts back to sleep. With
+  // a healthy battery it boots like any cold boot instead (xteink/ResetBoot.h).
+  const auto wakeupReason = xteink::resetboot::shouldBootAfterReset(
+                                detectedWakeupReason == HalGPIO::WakeupReason::PowerButton, wakeHoldVerified)
+                                ? HalGPIO::WakeupReason::Other
+                                : detectedWakeupReason;
 
   // X4 Pro and X4 Classic both map BTN_UP to GPIO0 — an ESP32-S3 boot strap — so
   // gate recovery on the non-strap Down key (GPIO7) to avoid a stuck-in-recovery loop.

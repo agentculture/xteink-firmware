@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "CrossPointSettings.h"
+#include "FreeSpaceCache.h"
 #include "XteinkConfig.h"
 #include "activities/Activity.h"  // ActivityManager + RenderLock
 #include "components/UITheme.h"
@@ -50,6 +51,8 @@ constexpr const char* kManifestTmp = "/.crosspoint/xteink-delivered.json.tmp";
 constexpr const char* kPartPath = "/.crosspoint/xteink-download.part";
 constexpr const char* kNvsNamespace = "xteink";  // shared with XteinkConfig
 constexpr const char* kNvsLastResult = "sync_last";
+constexpr const char* kNvsFreeBytes = "fs_free";  // fix F: cached SD free space
+constexpr const char* kNvsFreeAt = "fs_at";
 
 // The LAN probe must fall through to the tunnel quickly when xteink.local or
 // the provisioned address does not answer. It is both the connect timeout and
@@ -470,6 +473,56 @@ int64_t freeSdBytes() {
   return free == 0 ? -1 : static_cast<int64_t>(free);
 }
 
+// Fix F: the free-cluster count is slow (7 s on a 16 GB card), so the value
+// lives in RAM and NVS with the time it was measured (FreeSpaceCache.h).
+// Only sync() reads or writes it, and syncs never overlap.
+freespace::Cache freeCache;
+bool freeCacheLoaded = false;
+
+freespace::Cache loadFreeCache() {
+  if (freeCacheLoaded) return freeCache;
+  freeCacheLoaded = true;
+  nvs_handle_t h;
+  if (nvs_open(kNvsNamespace, NVS_READONLY, &h) != ESP_OK) return freeCache;
+  int64_t bytes = -1;
+  int64_t at = 0;
+  if (nvs_get_i64(h, kNvsFreeBytes, &bytes) == ESP_OK && nvs_get_i64(h, kNvsFreeAt, &at) == ESP_OK) {
+    freeCache = freespace::Cache{bytes, at};
+  }
+  nvs_close(h);
+  return freeCache;
+}
+
+void storeFreeCache(const freespace::Cache& cache) {
+  freeCache = cache;
+  freeCacheLoaded = true;
+  nvs_handle_t h;
+  if (nvs_open(kNvsNamespace, NVS_READWRITE, &h) != ESP_OK) return;
+  if (nvs_set_i64(h, kNvsFreeBytes, cache.freeBytes) != ESP_OK ||
+      nvs_set_i64(h, kNvsFreeAt, cache.measuredAt) != ESP_OK || nvs_commit(h) != ESP_OK) {
+    LOG_ERR(kTag, "NVS write failed (free space cache)");
+  }
+  nvs_close(h);
+}
+
+// Free space for a status report: the cached value when the policy allows,
+// else a real query that refreshes the cache. `measured` is set on a query.
+int64_t reportFreeBytes(const int64_t pendingBytes, bool& measured) {
+  const freespace::Cache cache = loadFreeCache();
+  const int64_t now = trustedtime::trustedNow();
+  if (freespace::usable(cache, now, pendingBytes)) {
+    LOG_INF(kTag, "Free space: cached %lld bytes (%lld s old)", static_cast<long long>(cache.freeBytes),
+            static_cast<long long>(now - cache.measuredAt));
+    return cache.freeBytes;
+  }
+  const uint32_t startMs = millis();
+  const int64_t bytes = freeSdBytes();
+  measured = true;
+  storeFreeCache(freespace::measured(bytes, now));
+  LOG_INF(kTag, "Free space query: %lu ms", static_cast<unsigned long>(millis() - startMs));
+  return bytes;
+}
+
 }  // namespace
 
 Outcome run(GfxRenderer* renderer, const Callbacks& cb, const uint32_t itemBudgetMs) {
@@ -529,9 +582,8 @@ Outcome run(GfxRenderer* renderer, const Callbacks& cb, const uint32_t itemBudge
 
   const LastResult previous = previousResult();
   StatusReport report;
-  phaseMs = millis();
-  report.freeSdBytes = freeSdBytes();
-  LOG_INF(kTag, "Free space query: %lu ms", static_cast<unsigned long>(millis() - phaseMs));
+  bool freeMeasured = false;
+  report.freeSdBytes = reportFreeBytes(0, freeMeasured);
   report.firmwareVersion = kFirmwareVersion;
   if (previous.valid) {
     report.lastSyncResult = previous.ok ? "ok" : "error";
@@ -611,6 +663,14 @@ Outcome run(GfxRenderer* renderer, const Callbacks& cb, const uint32_t itemBudge
       return out;
     }
   }
+  // The cached free space was only checked against an empty queue; when the
+  // queue would leave it tight, measure the card before writing (sd_full).
+  if (!freeMeasured) {
+    int64_t pendingBytes = 0;
+    for (const QueueItem& item : queue.items) pendingBytes += item.size > 0 ? item.size : 0;
+    report.freeSdBytes = reportFreeBytes(pendingBytes, freeMeasured);
+  }
+  int64_t writtenBytes = 0;
   out.skipped = static_cast<uint16_t>(queue.skipped.size());
   LOG_INF(kTag, "Queue: %u items, %u skipped, %u deletes, %u dropped", static_cast<unsigned>(queue.items.size()),
           static_cast<unsigned>(queue.skipped.size()), static_cast<unsigned>(queue.deletes.size()),
@@ -672,6 +732,7 @@ Outcome run(GfxRenderer* renderer, const Callbacks& cb, const uint32_t itemBudge
       clearBookCache(path);
       libraryChanged = true;
       downloaded = true;
+      writtenBytes += item.size > 0 ? item.size : 0;
     }
 
     const std::string ack = buildAckJson(item.id, item.sha256);
@@ -726,7 +787,16 @@ Outcome run(GfxRenderer* renderer, const Callbacks& cb, const uint32_t itemBudge
 
   // 6. Closing status report (skipped when the server already refused us).
   if (out.error != Error::Unauthorized && out.error != Error::Protocol && out.error != Error::Cancelled) {
-    report.freeSdBytes = freeSdBytes();
+    // Adjust the cached value by what this sync wrote instead of rescanning.
+    const freespace::Cache cache = loadFreeCache();
+    if (cache.freeBytes >= 0) {
+      const freespace::Cache adjusted = freespace::afterWrites(cache, writtenBytes);
+      if (writtenBytes > 0) storeFreeCache(adjusted);
+      report.freeSdBytes = adjusted.freeBytes > 0 ? adjusted.freeBytes : -1;
+    } else if (report.freeSdBytes > 0) {
+      // No trusted clock, so nothing was cached: adjust this sync's own reading.
+      report.freeSdBytes = report.freeSdBytes > writtenBytes ? report.freeSdBytes - writtenBytes : -1;
+    }
     report.lastSyncResult = out.error == Error::None ? "ok" : "error";
     report.lastError = lastError.empty() && out.error != Error::None ? errorCode(out.error) : lastError;
     report.inventory = inventoryOf(manifest, modified);

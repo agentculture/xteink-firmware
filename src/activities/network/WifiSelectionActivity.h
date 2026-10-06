@@ -100,8 +100,23 @@ class WifiSelectionActivity final : public Activity, private UiAppHost {
 
   // Connection timeout
   static constexpr unsigned long CONNECTION_TIMEOUT_MS = 15000;
-  static constexpr unsigned long AUTO_CONNECTION_TIMEOUT_MS = 7000;
+  // Saved-network auto-join (xteink fix E): 15 s per network (a slow range
+  // extender took 8.3 s to associate on an X3), within a 45 s budget for the
+  // whole auto-connect session so a long saved list cannot hang the screen.
+  // A network is only started with at least 10 s of budget left, and its
+  // timeout is cut to what remains.
+  static constexpr unsigned long AUTO_CONNECTION_TIMEOUT_MS = 15000;
+  static constexpr unsigned long AUTO_CONNECT_BUDGET_MS = 45000;
+  static constexpr unsigned long AUTO_CONNECT_MIN_ATTEMPT_MS = 10000;
+  static constexpr unsigned long autoAttemptTimeoutMs(const unsigned long sessionElapsedMs) {
+    const unsigned long remaining =
+        sessionElapsedMs < AUTO_CONNECT_BUDGET_MS ? AUTO_CONNECT_BUDGET_MS - sessionElapsedMs : 0;
+    if (remaining < AUTO_CONNECT_MIN_ATTEMPT_MS) return 0;
+    return remaining < AUTO_CONNECTION_TIMEOUT_MS ? remaining : AUTO_CONNECTION_TIMEOUT_MS;
+  }
   unsigned long connectionStartTime = 0;
+  unsigned long autoSessionStartTime = 0;
+  unsigned long autoAttemptTimeout = AUTO_CONNECTION_TIMEOUT_MS;
 
   // The UiAppHost app hosts the network list and the save/forget prompts
   // (themed rows and dialogs, touch routing); every other state keeps its

@@ -360,3 +360,192 @@ Record for each physical key: its position, the `adc1`/`adc2`/`pwr` values
 and the decoded name. Check especially the top regular key (reported as no
 reaction or a lock-up until Power) and which key, if any, decodes as Up (the
 default zoom key, t14).
+
+## X3 key profile (d5)
+
+On a unit detected as X3 (`[MAIN] Hardware detect: X3`), the firmware reads
+the keys through the X3 key profile (`src/xteink/X3KeyProfile.h`, applied once
+in `MappedInputManager`). X4 builds and X4 units are unchanged. Host test:
+`test/x3_key_profile`.
+
+| Physical key | Raw (XKEY) | Logical | Home | Settings (tabbed) | Reader |
+|--------------|-----------|---------|------|-------------------|--------|
+| Left edge | adc2 ~2222 | Left | selection up | previous tab | previous page |
+| Right edge | adc2 ~2 | Right | selection down | next tab | next page |
+| Bottom 4.1 | adc1 ~3515 | Back | open last book | back | back (long: rotate, d5) |
+| Bottom 4.2 | adc1 ~2686 | Confirm | select | toggle / open | menu (long: zoom, d5) |
+| Bottom 4.3 | adc1 ~1486 | Up | selection up | row up | line back (d3) |
+| Bottom 4.4 | adc1 ~0 | Down | selection down | row down | line forward (d3) |
+| Top regular key | none | chip RESET | reboots (see Reset boot) | | |
+
+How the existing settings combine with the profile:
+
+- **Front button remap** (Settings > Controls > Remap): remaps Back, Confirm,
+  Left and Right among 4.1, 4.2 and the two edge keys. The remap screen only
+  accepts those four keys. 4.3/4.4 stay Up/Down, and the preview shows no label
+  over them.
+- **Side Button Layout** and **Zoom Button (Reader)** are hidden on the X3:
+  there is no side page-turn key (pages turn with the edge keys) and zoom is
+  long-press Confirm. Saved values are kept and still apply on an X4.
+- **Front buttons follow orientation** and the touch-style orientation swap
+  (`isNavDirectionSwapped`) flip the logical axes on top of the profile, as
+  on the X4.
+- Raw-index combos are not remapped: screenshot is Power + right edge, and
+  recovery mode at boot is Power + 4.3 (logical Up).
+
+Checks:
+
+- [ ] Home: 4.3 moves the selection up, 4.4 moves it down. The edge keys also
+  move it (left up, right down). Confirm opens, Back opens the last book.
+- [ ] Settings: left/right edge switch tabs; 4.3/4.4 move between rows; the
+  hints over 4.3/4.4 read Up/Down.
+- [ ] A plain list (Library, file browser, reader menu): 4.3/4.4 and the edges
+  move the selection.
+- [ ] Reader: left edge previous page, right edge next page; 4.3/4.4 do not turn
+  pages.
+- [ ] Remap: swap Left and Right in Settings > Controls > Remap; the edges swap
+  in the reader and on tabs. Reset with 4.3 (Up) restores the default.
+- [ ] Settings > Controls has no Side Button Layout and no Zoom Button entry.
+- [ ] Reader rotated to Inverted with Front buttons follow orientation on: the
+  edge keys swap previous/next, and 4.3/4.4 swap up/down in lists.
+- [ ] Percent dialog (Go to %): edges change by 1%, 4.3 by -10%, 4.4 by +10%.
+- [ ] Keyboard entry: note which keys move the cursor; the side hints still sit
+  at the edges (known: the keyboard's own hint labels were not adapted).
+
+## Reader long-press (d5)
+
+X3 only (X4 keeps its side zoom key and upstream long-press Back). Both holds
+fire at 700 ms while the key is still down; the release is then swallowed, so
+the short-press action does not also run. Policy is host-tested in
+`test/reader_long_press`.
+
+- [ ] Long-press Confirm (4.2) in a book: the zoom scale appears after about
+  0.7 s, before releasing. Releasing does **not** open the reader menu.
+- [ ] Short Confirm still opens the reader menu.
+- [ ] In zoom mode the left/right edge keys step the size smaller/larger;
+  Confirm (short, or held 0.7 s) applies with one reflow at the same passage;
+  Back cancels without a reflow (t14 checks 5 to 9 still hold).
+- [ ] Settings > Controls > Long-Press Menu shows **Zoom** where X4 shows
+  Disabled. Pick Bookmark: long-press Confirm adds a bookmark instead of
+  zooming. Set it back to Zoom.
+- [ ] Long-press Back (4.1): portrait switches to landscape (and back on the
+  next hold); the same passage is on screen; the choice survives leaving and
+  reopening the book (Settings > Reader > Orientation shows it).
+- [ ] From Inverted, a hold goes to Landscape CCW and back to Inverted.
+- [ ] Short Back still leaves the book as before. The long-press Back to the
+  file browser no longer exists on the X3 (use Back Short to File Browser in
+  Settings if needed).
+- [ ] Long-press Back while the end-of-book menu is up does not rotate.
+- [ ] XTC book: long-press Confirm/Back do nothing new (zoom and the rotate
+  hold are EPUB-reader only).
+
+## Reset boot (d5)
+
+The X3's top regular key is the chip RESET. A reset reports
+`ESP_RST_POWERON` with no wakeup cause, which upstream classifies as an unheld
+power-button cold boot (`HalGPIO::getWakeupReason`, `lib/hal/HalGPIO.cpp`) and
+puts back to sleep (`src/main.cpp`, "Power-button wake not held through
+verification, sleeping"). On the X3 it now boots like a cold boot when the fuel
+gauge reports at least 3% and 3400 mV. Decision logic: `src/xteink/ResetBoot.h`,
+host tests in `test/reset_boot`.
+
+| Boot | Reset reason / wake cause | X3 now | X4 |
+|------|---------------------------|--------|----|
+| Power key wake from deep sleep, held | DEEPSLEEP / GPIO | boots (verified) | same |
+| Power key wake from deep sleep, released early | DEEPSLEEP / GPIO | sleeps (ghost-wake guard) | same |
+| Power key cold boot, held | POWERON / none | boots (verified) | same |
+| Top key (RESET), battery >= 3% and >= 3400 mV | POWERON / none | **boots, splash, then Home or the last book** | n/a |
+| Top key or battery reconnect, battery low or gauge unreadable | POWERON / none | sleeps (upstream) | n/a |
+| USB plugged into an off unit, charging | POWERON / none, USB | charge-sleeps (upstream AfterUSBPower) | same |
+| Brownout, panic, software restart | BROWNOUT / SW / PANIC | boots (upstream Other) | same |
+
+Checks (serial log at 115200):
+
+- [ ] While reading, press the top key: the log shows `Power-on without held
+  button: battery NN% NNNNmV -> reset key, booting`, the splash appears, and the
+  device returns to the book (or Home if the book was not open).
+- [ ] On Home, press the top key: boots to Home.
+- [ ] Power key from sleep still needs the hold: a quick tap while asleep (Short
+  Power Button = not Sleep) goes back to sleep; a hold wakes.
+- [ ] With USB attached and charging, press the top key: note the result (the
+  upstream AfterUSBPower path charge-sleeps; this was not changed).
+- [ ] Low battery: below 3% (or gauge reading under 3.4 V) the top key leaves
+  the device asleep and the log says `-> sleeping`; no repeated boots.
+- [ ] Ten top-key presses in a row: each boots once, no boot loop, no crash
+  screen.
+
+## Line scroll (d3)
+
+X3 key profile, EPUB reader only: 4.3 (Up) moves the view one line back, 4.4
+(Down) one line forward. The window is built from the two cached pages (the
+page on screen and the next one): no reflow, pagination unchanged. Window
+logic: `src/activities/reader/LineWindow.h`, host tests in `test/line_window`.
+
+- [ ] Press 4.4 once: the top line disappears, the text moves up one line and
+  the first line of the next page appears at the bottom. Line spacing at the
+  seam looks the same as elsewhere on the page.
+- [ ] Press 4.4 twice, then the right edge (next page): the new page is also
+  shifted by two lines (its first two lines are the ones already seen at the
+  bottom). The left edge goes back by a page with the same offset.
+- [ ] Press 4.3 after scrolling down: the text moves back one line. From an
+  unscrolled page, 4.3 shows the previous page's last line on top.
+- [ ] Hold-free repeat: 30 presses of 4.4 walk past a page boundary with no
+  skipped or repeated line (compare with a normal page turn).
+- [ ] Image: scrolling past an image takes it off the top in one step; an image
+  at the top of the next page appears only once it fits (the bottom stays blank
+  until then).
+- [ ] Refresh: each step is a fast partial refresh; after the configured number
+  of steps/turns (Settings > Refresh Frequency) a half refresh clears ghosting.
+  Note any ghosting left after 20 steps.
+- [ ] The offset resets to the page top on zoom (enter and leave), rotation
+  (long-press Back or the menu), Go to %, chapter select, bookmarks and links.
+- [ ] Last page of a chapter: it shows unscrolled (no lines are lost, a few may
+  repeat); 4.4 there does nothing; the right edge goes to the next chapter at the
+  top.
+- [ ] Reading position after a scroll survives leaving and reopening the book
+  (it reopens at the top of the page the window started on).
+- [ ] XTC book: 4.3/4.4 do nothing; pages only.
+- [ ] Free heap in the `MEM` log line while scrolling stays within a few KB of
+  plain page turns (two pages resident during a scrolled render).
+
+## Wi-Fi auto-join timeout (fix E)
+
+Saved-network auto-join (`WifiSelectionActivity`) now waits up to 15 s per
+network (was 7 s; a range extender measured 8.3 s to associate) within a 45 s
+budget for the whole auto-connect session. A network is started only with at
+least 10 s of budget left, and its timeout is cut to what remains. Networks
+after the first (last-used) attempt come from the scan, so unseen saved
+networks are not tried.
+
+- [ ] With the extender (bar-nachum_EXT) as the only reachable saved network
+  and a stale last-used network (iPhone) saved: the log shows `Attempting
+  saved network: iPhone (5) (timeout 15000 ms)`, a failure after 15 s, then
+  `bar-nachum_EXT (timeout 15000 ms)` and a connection after about 8 s.
+- [ ] With 4+ saved networks all failing: auto-connect gives up and shows the
+  network list no later than about 45 s plus the scan time, and the log shows
+  `Auto-connect budget used up` for the networks it skipped.
+- [ ] Confirm during auto-connect still shows the network list at once.
+- [ ] Manual connection timeout is unchanged (15 s).
+
+## Sync free-space cache (fix F)
+
+The status report's `free_sd_bytes` comes from a cache (RAM + NVS keys
+`fs_free`/`fs_at` in the `xteink` namespace) instead of a 7 s free-cluster
+scan on every sync. Policy: `src/xteink/FreeSpaceCache.h`, host tests in
+`test/xteink_free_space`. The card is scanned when there is no cached value,
+the clock is not trusted, the value is 24 h old or more, or the cached space
+minus the queued downloads is under 64 MB. After downloads the cached value is
+reduced by the bytes written. Space freed or used outside sync (USB drive, web
+upload, deleting books) is not tracked until the next scan, at most 24 h later.
+
+- [ ] First sync after flashing: the log shows `Free space query: NNNN ms`
+  (the scan) and the server shows the device's free space.
+- [ ] Second sync right after: the log shows `Free space: cached N bytes (S s
+  old)` and no `Free space query` line; the time from `Inventory` to the LAN
+  verdict drops by about 7 s.
+- [ ] Download a 20 MB book: on the next sync the server's free space is about
+  20 MB lower than before, without a scan.
+- [ ] Power cycle and sync again: still cached (NVS), no scan.
+- [ ] Nearly full card (fill it to under 64 MB free plus the queue): the sync
+  scans before downloading, and the server marks a too-large item `sd_full`.
+- [ ] Set the clock back or boot without a trusted time: the sync scans.
