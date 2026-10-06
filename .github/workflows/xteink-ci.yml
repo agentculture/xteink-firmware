@@ -12,6 +12,18 @@ permissions:
   contents: read
 
 jobs:
+  guards:
+    # t13: no listening service without a menu action, verified TLS in the
+    # shared downloader, fork-only OTA feed, pinned CA bundle (docs/xteink/tls.md).
+    name: Xteink security guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Service and TLS placement guard
+        run: python3 scripts/xteink-check-services.py
+      - name: Pinned CA bundle
+        run: python3 test/test_xteink_ca_bundle.py
+
   build:
     name: Xteink build ${{ matrix.env }}
     runs-on: ubuntu-latest
