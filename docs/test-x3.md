@@ -273,3 +273,35 @@ in `docs/xteink/sync.md`.
 - [ ] **Key never on the wire elsewhere.** With mitmproxy on the tunnel path
   (see Security (t13) bench test), the sync fails closed and no
   `Authorization` header is visible.
+
+## Tab navigation (d2)
+
+Applies to Settings and Reader > Text Settings (every screen built on
+`UiTabListActivity`). The Library keeps its own sort-tab navigation (front
+Left on the sort tabs opens Search) and is not covered here.
+
+- [ ] **Left/Right switch tabs at once.** In Settings, a single front Left or
+  Right press moves to the previous/next tab (wrapping at the ends). No long
+  press is needed. The button hints over those keys read "Left"/"Right".
+- [ ] **Focus kind is kept.** With the tab band highlighted, Left/Right keep
+  the band highlighted. With a row highlighted, Left/Right land on a row of
+  the new tab (Settings: its first row; Text Settings: the row last used on
+  that tab), never on the band.
+- [ ] **Up/Down move within the tab.** Side Up/Down move one row per press.
+  Down from the band enters the first row; Up from the first row returns to the
+  band; Down from the last row wraps to the band.
+- [ ] **Hold Up/Down pages.** On a long tab (Text Settings > Family with SD
+  fonts, or a Settings tab that scrolls), holding Down jumps a page of rows at
+  a time; holding Up jumps back.
+- [ ] **Hold Left/Right repeats.** Holding Right steps through the tabs about
+  twice a second.
+- [ ] **Confirm/Back unchanged.** Confirm on the band still advances the tab;
+  on a row it toggles/opens the setting. In Settings, Back from a row returns
+  to the band and Back on the band leaves Settings (and saves); in Text
+  Settings, Back closes the screen as before.
+- [ ] **Front-button remap.** In Settings > Controls swap the front Left/Right
+  mapping: tab switching follows the remapped keys.
+- [ ] **Reader untouched.** In a book, Left/Right still turn pages and the
+  zoom key still enters zoom mode (t14 checks 2 to 6).
+- [ ] **Touch boards (if available).** On an X4 Pro, tapping a tab pill still
+  switches tabs and tapping a row still selects it.
