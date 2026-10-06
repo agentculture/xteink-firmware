@@ -31,6 +31,7 @@ enum class SettingAction {
   HomeButton,
   About,
   ProvisionUsb,
+  XteinkSync,
 };
 
 struct SettingInfo {
