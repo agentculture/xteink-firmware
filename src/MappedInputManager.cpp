@@ -43,7 +43,7 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
     homeAction = deferredHomeAction;
     deferredHomeAction = HomeButtonAction::Ignore;
   }
-  for (uint8_t value = 0; value <= static_cast<uint8_t>(Button::ScreenDown); ++value) {
+  for (uint8_t value = 0; value <= static_cast<uint8_t>(Button::Zoom); ++value) {
     if (!isPressed(static_cast<Button>(value))) longPressFiredButtons &= ~(1u << value);
   }
 }
@@ -88,8 +88,15 @@ MappedInputManager::Button MappedInputManager::mapScreenDirection(const Button b
   return directions[orientation][direction];
 }
 
+bool MappedInputManager::isZoomKey(const uint8_t hw) {
+  return (SETTINGS.zoomButton == CrossPointSettings::ZOOM_BTN_UP && hw == HalGPIO::BTN_UP) ||
+         (SETTINGS.zoomButton == CrossPointSettings::ZOOM_BTN_DOWN && hw == HalGPIO::BTN_DOWN);
+}
+
 bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint8_t) const) const {
   const auto sideLayout = SETTINGS.sideButtonLayout;
+  // The side key claimed by zoom mode never doubles as a page-turn key.
+  const auto sideKey = [&](const uint8_t hw) { return !isZoomKey(hw) && (gpio.*fn)(hw); };
 
   switch (button) {
     case Button::Back:
@@ -117,11 +124,11 @@ bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint
       // Reader page navigation uses side buttons and can be swapped via settings.
       switch (sideLayout) {
         case CrossPointSettings::PREV_NEXT:
-          return (gpio.*fn)(isNavDirectionSwapped() ? HalGPIO::BTN_DOWN : HalGPIO::BTN_UP);
+          return sideKey(isNavDirectionSwapped() ? HalGPIO::BTN_DOWN : HalGPIO::BTN_UP);
         case CrossPointSettings::NEXT_PREV:
-          return (gpio.*fn)(isNavDirectionSwapped() ? HalGPIO::BTN_UP : HalGPIO::BTN_DOWN);
+          return sideKey(isNavDirectionSwapped() ? HalGPIO::BTN_UP : HalGPIO::BTN_DOWN);
         case CrossPointSettings::PREV_PREV:
-          return (gpio.*fn)(HalGPIO::BTN_UP) || (gpio.*fn)(HalGPIO::BTN_DOWN);
+          return sideKey(HalGPIO::BTN_UP) || sideKey(HalGPIO::BTN_DOWN);
         case CrossPointSettings::NEXT_NEXT:
         case CrossPointSettings::SIDE_BUTTONS_DISABLED:
         default:
@@ -131,16 +138,19 @@ bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint
       // Reader page navigation uses side buttons and can be swapped via settings.
       switch (sideLayout) {
         case CrossPointSettings::PREV_NEXT:
-          return (gpio.*fn)(isNavDirectionSwapped() ? HalGPIO::BTN_UP : HalGPIO::BTN_DOWN);
+          return sideKey(isNavDirectionSwapped() ? HalGPIO::BTN_UP : HalGPIO::BTN_DOWN);
         case CrossPointSettings::NEXT_PREV:
-          return (gpio.*fn)(isNavDirectionSwapped() ? HalGPIO::BTN_DOWN : HalGPIO::BTN_UP);
+          return sideKey(isNavDirectionSwapped() ? HalGPIO::BTN_DOWN : HalGPIO::BTN_UP);
         case CrossPointSettings::NEXT_NEXT:
-          return (gpio.*fn)(HalGPIO::BTN_UP) || (gpio.*fn)(HalGPIO::BTN_DOWN);
+          return sideKey(HalGPIO::BTN_UP) || sideKey(HalGPIO::BTN_DOWN);
         case CrossPointSettings::PREV_PREV:
         case CrossPointSettings::SIDE_BUTTONS_DISABLED:
         default:
           return false;
       }
+    case Button::Zoom:
+      return SETTINGS.zoomButton != CrossPointSettings::ZOOM_BTN_OFF &&
+             (gpio.*fn)(SETTINGS.zoomButton == CrossPointSettings::ZOOM_BTN_DOWN ? HalGPIO::BTN_DOWN : HalGPIO::BTN_UP);
     case Button::NavNext:
       // Logical "next item" navigation: side Down + front Right, with the control axis flipped in
       // INVERTED / LANDSCAPE_CCW under the live orientation policy, matching the rotated hint labels.
@@ -396,7 +406,7 @@ void MappedInputManager::suppressNextRelease(const Button button) const {
 
 bool MappedInputManager::consumeSuppressedRelease() const {
   uint16_t released = 0;
-  for (uint8_t value = 0; value <= static_cast<uint8_t>(Button::ScreenDown); ++value) {
+  for (uint8_t value = 0; value <= static_cast<uint8_t>(Button::Zoom); ++value) {
     const uint16_t bit = 1u << value;
     if ((suppressedReleaseButtons & bit) != 0 && mapButton(static_cast<Button>(value), &HalGPIO::wasReleased)) {
       released |= bit;

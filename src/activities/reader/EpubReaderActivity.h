@@ -16,6 +16,7 @@
 #include "ProgressMapper.h"
 #include "ReaderActivity.h"
 #include "ReaderToolbarUi.h"
+#include "ZoomMode.h"
 #include "components/OptionPopup.h"
 
 class EpubReaderActivity final : public ReaderActivity {
@@ -54,6 +55,10 @@ class EpubReaderActivity final : public ReaderActivity {
   bool recentsEntryRemoved = false;
   unsigned long bookmarkMessageTime = 0UL;
   bool pendingReadFolderMove = false;
+
+  // Zoom mode (xteink fork): the zoom key shows a point-size scale over the
+  // page; Left/Right only move the selection, and the book reflows once on exit.
+  ZoomMode zoom;
 
   // Toolbar reader menu (SETTINGS.readerMenuStyle == READER_MENU_TOOLBAR): drawn
   // over the page instead of pushing the full-screen list menu. Select opens the
@@ -166,6 +171,12 @@ class EpubReaderActivity final : public ReaderActivity {
   // Persist the reader text settings, (re)load the selected SD font, and
   // re-paginate the current chapter so changes apply without re-opening the book.
   void applyReaderTextSettings();
+  // Zoom mode. enterZoom(paintNow): paintNow draws the scale straight onto the
+  // page already on screen; otherwise the next renderBook() draws it.
+  void enterZoom(bool paintNow);
+  void handleZoomInput();
+  void exitZoom(bool commit);
+  void paintZoomScale();  // draws into the framebuffer; caller holds RenderLock and pushes the refresh
   // More panel rows.
   void buildMoreActions();
   std::string moreRowName(int row) const;

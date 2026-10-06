@@ -527,6 +527,17 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  // Zoom mode owns all input while its scale is up (Left/Right step the size
+  // instead of turning pages); the zoom key opens it.
+  if (zoom.active()) {
+    handleZoomInput();
+    return;
+  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Zoom) && section && !endOfBookMenuActive()) {
+    enterZoom(true);
+    return;
+  }
+
   switch (mappedInput.homeButtonAction()) {
     case HomeButtonAction::ReaderMenu:
     case HomeButtonAction::Bookmark:
@@ -889,6 +900,9 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
           });
       break;
     }
+    case EpubReaderMenuActivity::MenuAction::ZOOM:
+      enterZoom(false);
+      break;
     case EpubReaderMenuActivity::MenuAction::FOOTNOTES: {
       openFootnoteSelect(true);
       break;
@@ -1601,6 +1615,12 @@ void EpubReaderActivity::renderBook() {
   }
 
   pageBufferStale = false;  // the page is back in the framebuffer
+
+  // Zoom mode survives a re-render (it needs the scale back on top of the page).
+  if (zoom.active() && overlay == Overlay::None) {
+    paintZoomScale();
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  }
 
   // Toolbar menu: overlay the toolbar / panel on top of the freshly rendered page.
   if (overlay != Overlay::None && usesToolbarMenu()) {
@@ -2559,6 +2579,105 @@ void EpubReaderActivity::applyReaderTextSettings() {
     nextPageNumber = section->currentPage;
   }
   section.reset();  // force re-pagination with the new settings
+}
+
+// --- Zoom mode (xteink fork) -------------------------------------------------
+
+void EpubReaderActivity::enterZoom(const bool paintNow) {
+  // Only the sizes the active family ships are offered (built-in 12/14/16/18,
+  // vector 8-22, or the installed .cpfont sizes).
+  if (!zoom.enter(readerFontPointSizes(&sdFontSystem.registry(), SETTINGS.sdFontFamilyName), SETTINGS.fontPointSize)) {
+    return;
+  }
+  automaticPageTurnActive = false;
+  mappedInput.resetHomeButtonInput();
+  if (paintNow && section && !pageBufferStale) {
+    // The page is on screen and in the framebuffer: draw the scale over it and
+    // push one refresh, no re-render (same approach as openOverlay()).
+    RenderLock lock;
+    settleOverlayRefresh();
+    paintZoomScale();
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  } else {
+    requestUpdate();  // renderBook() draws the scale once the page is back
+  }
+}
+
+void EpubReaderActivity::handleZoomInput() {
+  using Btn = MappedInputManager::Button;
+  // Right/PageForward = larger, mirrored with the control axis exactly like
+  // ReaderUtils::detectPageTurn() does for page turns.
+  const bool swap = mappedInput.isNavDirectionSwapped();
+  const bool larger =
+      mappedInput.wasReleased(swap ? Btn::Left : Btn::Right) || mappedInput.wasReleased(Btn::PageForward);
+  const bool smaller = mappedInput.wasReleased(swap ? Btn::Right : Btn::Left) || mappedInput.wasReleased(Btn::PageBack);
+
+  if (mappedInput.wasReleased(Btn::Back)) {
+    exitZoom(false);
+  } else if (mappedInput.wasReleased(Btn::Zoom) || mappedInput.wasReleased(Btn::Confirm)) {
+    exitZoom(true);
+  } else if ((larger && zoom.stepLarger()) || (smaller && zoom.stepSmaller())) {
+    // Selection only: no reflow, no settings write. Redraw just the scale.
+    RenderLock lock;
+    paintZoomScale();
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  }
+}
+
+void EpubReaderActivity::exitZoom(const bool commit) {
+  const auto out = commit ? zoom.commit() : zoom.cancel();
+  mappedInput.resetHomeButtonInput();
+  if (out.changed) {
+    // The single reflow. applyReaderTextSettings() records the visible text
+    // offset first, so the same passage is on screen at the new size.
+    SETTINGS.fontPointSize = out.pt;
+    applyReaderTextSettings();
+  }
+  requestUpdate();  // repaint the page without the scale (reflowed iff changed)
+}
+
+void EpubReaderActivity::paintZoomScale() {
+  const int width = renderer.getScreenWidth();
+  const int height = renderer.getScreenHeight();
+  const auto& sizes = zoom.sizes();
+  if (sizes.empty()) return;
+
+  constexpr int kPad = 6;
+  constexpr int kMargin = 8;
+  const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
+  const int smallH = renderer.getLineHeight(SMALL_FONT_ID);
+  const int boxW = width - 2 * kMargin;
+  const int boxH = kPad * 3 + lineH * 2 + smallH;
+  const int boxX = kMargin;
+  const int boxY = height - boxH - kMargin;
+
+  // Opaque panel: nothing of the page shows through, so a redraw needs no
+  // snapshot of the page underneath.
+  renderer.fillRect(boxX, boxY, boxW, boxH, false);
+  renderer.drawRect(boxX, boxY, boxW, boxH, 2, true);
+
+  char title[24];
+  snprintf(title, sizeof(title), "%s %u pt", tr(STR_ZOOM), static_cast<unsigned>(zoom.selectedPt()));
+  renderer.drawText(UI_10_FONT_ID, boxX + (boxW - renderer.getTextWidth(UI_10_FONT_ID, title)) / 2, boxY + kPad, title);
+
+  // One cell per available size; the selected one is inverted.
+  const int cellW = (boxW - 2 * kPad) / static_cast<int>(sizes.size());
+  const int rowY = boxY + kPad * 2 + lineH;
+  for (size_t i = 0; i < sizes.size(); ++i) {
+    char label[8];
+    snprintf(label, sizeof(label), "%u", static_cast<unsigned>(sizes[i]));
+    const int cellX = boxX + kPad + static_cast<int>(i) * cellW;
+    const bool selected = i == zoom.selectedIndex();
+    if (selected) renderer.fillRect(cellX, rowY, cellW, lineH, true);
+    renderer.drawText(UI_10_FONT_ID, cellX + (cellW - renderer.getTextWidth(UI_10_FONT_ID, label)) / 2, rowY, label,
+                      !selected);
+  }
+
+  const char* hint = tr(STR_ZOOM_HINT);
+  if (renderer.getTextWidth(SMALL_FONT_ID, hint) <= boxW - 2 * kPad) {
+    renderer.drawText(SMALL_FONT_ID, boxX + (boxW - renderer.getTextWidth(SMALL_FONT_ID, hint)) / 2,
+                      rowY + lineH + kPad, hint);
+  }
 }
 
 // The More panel carries everything the classic list menu offers except the
