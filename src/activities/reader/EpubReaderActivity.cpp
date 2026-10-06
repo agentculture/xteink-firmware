@@ -733,7 +733,7 @@ void EpubReaderActivity::loop() {
   }
 
   // X3 key profile (xteink d3): Up/Down (bottom keys 4.3/4.4) move the view
-  // one line, with the same orientation swap as list navigation.
+  // one paragraph, with the same orientation swap as list navigation.
   if (mappedInput.hasX3KeyProfile() && section && !endOfBookMenuOpen && !atEndOfBook) {
     const bool swapped = mappedInput.isNavDirectionSwapped();
     int step = 0;
@@ -1593,17 +1593,17 @@ void EpubReaderActivity::renderBook() {
   updateBookmarkFlag();
 
   {
-    // Line scroll back from offset 0 (xteink d3): the window moves to the last
-    // line of the previous page, whose line count is only known once loaded.
+    // Paragraph scroll back from offset 0 (xteink d3): the window moves to the
+    // last paragraph of the previous page, only known once that page is loaded.
     if (linePendingBack) {
       linePendingBack = false;
       if (lineAnchorValid() && lineOffset == 0 && section->currentPage > 0) {
         if (const auto prev = section->loadPage(section->currentPage - 1)) {
-          int units = 0;
-          for (size_t i = 0; i < prev->elements.size(); ++i) {
-            if (i == 0 || prev->elements[i]->yPos != prev->elements[i - 1]->yPos) ++units;
-          }
-          const auto pos = line_window::stepBackward({section->currentPage, 0}, units);
+          std::vector<line_window::Element> els;
+          lineElements(*prev, els);
+          const int last = line_window::prevParagraph(els.data(), els.size(), line_window::unitCount(els.data(), els.size()),
+                                                      renderer.getLineHeight(SETTINGS.getReaderFontId()));
+          const line_window::Position pos{section->currentPage - 1, last > 0 ? last : 0};
           section->currentPage = pos.page;
           lineOffset = pos.offset;
           lineAnchorSpine = currentSpineIndex;
@@ -2645,7 +2645,7 @@ void EpubReaderActivity::applyReaderTextSettings() {
   resetLineScroll();  // xteink d3: the window belongs to the old pagination
 }
 
-// --- Line scroll (xteink d3) --------------------------------------------------
+// --- Paragraph scroll (xteink d3) ---------------------------------------------
 
 bool EpubReaderActivity::lineAnchorValid() const {
   return section && lineAnchorSpine == currentSpineIndex && lineAnchorPage == section->currentPage;
@@ -2657,26 +2657,28 @@ void EpubReaderActivity::lineScroll(const int step) {
     if (!section || section->pageCount == 0) return;
     clearDeferredReposition();
     if (!lineAnchorValid()) {
-      // Fresh start on the page on screen (lineUnits is from its render).
+      // Fresh start on the page on screen (lineEls is from its render).
       lineOffset = 0;
       linePendingBack = false;
       lineAnchorSpine = currentSpineIndex;
       lineAnchorPage = section->currentPage;
     }
     const line_window::Position at{section->currentPage, lineOffset};
+    const int pitchFallback = renderer.getLineHeight(SETTINGS.getReaderFontId());
     if (step > 0) {
       const bool hasNext = section->currentPage + 1 < static_cast<int>(section->pageCount);
-      const auto pos = line_window::stepForward(at, lineUnits, hasNext);
+      const int nextOnPage = line_window::nextParagraph(lineEls.data(), lineEls.size(), lineOffset, pitchFallback);
+      const auto pos = line_window::paragraphForward(at, nextOnPage, hasNext);
       if (pos.page == at.page && pos.offset == at.offset) return;
       section->currentPage = pos.page;
       lineOffset = pos.offset;
       lineAnchorPage = pos.page;
     } else if (lineOffset > 0) {
-      lineOffset--;
+      lineOffset = line_window::prevParagraph(lineEls.data(), lineEls.size(), lineOffset, pitchFallback);
     } else if (section->currentPage > 0) {
       linePendingBack = true;  // resolved by renderBook(), which loads the previous page
     } else {
-      return;  // first line of the chapter
+      return;  // top of the chapter
     }
     lastPageTurnTime = millis();
   }
@@ -2697,28 +2699,30 @@ void EpubReaderActivity::carryLineOffsetAfterTurn(const int spineBefore) {
   }
 }
 
+void EpubReaderActivity::lineElements(const Page& src, std::vector<line_window::Element>& out) {
+  out.clear();
+  out.reserve(src.elements.size());
+  for (const auto& el : src.elements) {
+    const int16_t height =
+        el->getTag() == TAG_PageImage ? static_cast<const PageImage&>(*el).getImageBlock().getHeight() : 0;
+    out.push_back({el->yPos, height});
+  }
+}
+
 void EpubReaderActivity::composeLineWindow(Page& page) {
   using line_window::Element;
-  const auto toElements = [](const Page& src, std::vector<Element>& out) {
-    out.clear();
-    out.reserve(src.elements.size());
-    for (const auto& el : src.elements) {
-      const int16_t height =
-          el->getTag() == TAG_PageImage ? static_cast<const PageImage&>(*el).getImageBlock().getHeight() : 0;
-      out.push_back({el->yPos, height});
-    }
-  };
 
   if (!lineAnchorValid()) {
     lineOffset = 0;
     linePendingBack = false;
   }
   // Two small scratch arrays (4 bytes per element, a page holds a few dozen):
-  // heap rather than stack, they are only alive for this call.
+  // heap rather than stack, they are only alive for this call. A copy of `cur`
+  // stays in lineEls for the next paragraph step.
   std::vector<Element> cur;
-  toElements(page, cur);
+  lineElements(page, cur);
   const int units = line_window::unitCount(cur.data(), cur.size());
-  lineUnits = units;
+  lineEls = cur;
   const bool hasNext = section->currentPage + 1 < static_cast<int>(section->pageCount);
   lineOffset = line_window::carriedOffset(lineOffset, units, hasNext);
   if (lineOffset == 0) return;
@@ -2733,7 +2737,7 @@ void EpubReaderActivity::composeLineWindow(Page& page) {
     return;
   }
   std::vector<Element> nxt;
-  toElements(*next, nxt);
+  lineElements(*next, nxt);
   const int pitchFallback = renderer.getLineHeight(SETTINGS.getReaderFontId());
   const auto plan = line_window::plan(cur.data(), cur.size(), nxt.data(), nxt.size(), lineOffset, pitchFallback);
   if (!plan.valid) return;

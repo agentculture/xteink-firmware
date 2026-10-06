@@ -40,7 +40,7 @@ struct Row {
   bool settingsKnown;  // directional on a tabbed list
   Move settings;
   int readerPage;  // reader page step: -1 previous, +1 next
-  int readerLine;  // reader line scroll (d3): -1 one line back, +1 one line forward
+  int readerLine;  // reader paragraph scroll (d3): -1 one paragraph back, +1 one forward
 };
 
 // Reader line step of a slot: the EPUB reader feeds logical Up/Down through

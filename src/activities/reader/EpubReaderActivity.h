@@ -13,6 +13,7 @@
 #include "BookmarkEntry.h"
 #include "ChapterPosition.h"
 #include "EpubReaderMenuActivity.h"
+#include "LineWindow.h"
 #include "ProgressMapper.h"
 #include "ReaderActivity.h"
 #include "ReaderToolbarUi.h"
@@ -56,13 +57,15 @@ class EpubReaderActivity final : public ReaderActivity {
   unsigned long bookmarkMessageTime = 0UL;
   bool pendingReadFolderMove = false;
 
-  // Line scroll (xteink d3, X3 key profile, LineWindow.h): the window is
+  // Paragraph scroll (xteink d3, X3 key profile, LineWindow.h): the window is
   // (section->currentPage, lineOffset), valid only while the anchor matches the
   // page on screen; any other navigation (go-to, chapter, reflow) drops it.
   int lineOffset = 0;
   int lineAnchorSpine = -1;
   int lineAnchorPage = -1;
-  int lineUnits = 0;  // units of the anchor page, from its last render
+  // Line positions of the anchor page from its last render (before the window is
+  // applied): paragraph steps read the paragraph gaps from them.
+  std::vector<line_window::Element> lineEls;
   bool linePendingBack = false;
   bool lineAnchorValid() const;
   void lineScroll(int step);
@@ -74,6 +77,7 @@ class EpubReaderActivity final : public ReaderActivity {
   }
   // Applies the window to the loaded page in place (renderBook's page).
   void composeLineWindow(Page& page);
+  static void lineElements(const Page& src, std::vector<line_window::Element>& out);
 
   // Zoom mode (xteink fork): the zoom key shows a point-size scale over the
   // page; Left/Right only move the selection, and the book reflows once on exit.
