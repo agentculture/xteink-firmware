@@ -507,3 +507,22 @@ logic: `src/activities/reader/LineWindow.h`, host tests in `test/line_window`.
 - [ ] XTC book: 4.3/4.4 do nothing; pages only.
 - [ ] Free heap in the `MEM` log line while scrolling stays within a few KB of
   plain page turns (two pages resident during a scrolled render).
+
+## Wi-Fi auto-join timeout (fix E)
+
+Saved-network auto-join (`WifiSelectionActivity`) now waits up to 15 s per
+network (was 7 s; a range extender measured 8.3 s to associate) within a 45 s
+budget for the whole auto-connect session. A network is started only with at
+least 10 s of budget left, and its timeout is cut to what remains. Networks
+after the first (last-used) attempt come from the scan, so unseen saved
+networks are not tried.
+
+- [ ] With the extender (bar-nachum_EXT) as the only reachable saved network
+  and a stale last-used network (iPhone) saved: the log shows `Attempting
+  saved network: iPhone (5) (timeout 15000 ms)`, a failure after 15 s, then
+  `bar-nachum_EXT (timeout 15000 ms)` and a connection after about 8 s.
+- [ ] With 4+ saved networks all failing: auto-connect gives up and shows the
+  network list no later than about 45 s plus the scan time, and the log shows
+  `Auto-connect budget used up` for the networks it skipped.
+- [ ] Confirm during auto-connect still shows the network list at once.
+- [ ] Manual connection timeout is unchanged (15 s).

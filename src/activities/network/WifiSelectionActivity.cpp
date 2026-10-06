@@ -147,6 +147,7 @@ void WifiSelectionActivity::onEnter() {
   // network first for speed, then scan and try any visible saved networks by
   // signal strength. The user can interrupt this and show the scan result.
   if (allowAutoConnect && savedCredentialCount != 0) {
+    autoSessionStartTime = millis();
     const std::string lastSsid = WIFI_STORE.getLastConnectedSsid();
     if (!lastSsid.empty()) {
       const auto cred = WIFI_STORE.findCredential(lastSsid);
@@ -396,8 +397,14 @@ bool WifiSelectionActivity::tryAutoConnectCredential(const WifiCredential& cred)
   if (hasAttemptedAutoSsid(cred.ssid)) {
     return false;
   }
+  const unsigned long timeoutMs = autoAttemptTimeoutMs(millis() - autoSessionStartTime);
+  if (timeoutMs == 0) {
+    LOG_DBG("WIFI", "Auto-connect budget used up, not trying: %s", cred.ssid.c_str());
+    return false;
+  }
 
-  LOG_DBG("WIFI", "Attempting saved network: %s", cred.ssid.c_str());
+  LOG_DBG("WIFI", "Attempting saved network: %s (timeout %lu ms)", cred.ssid.c_str(), timeoutMs);
+  autoAttemptTimeout = timeoutMs;
   autoAttemptedSsids.push_back(cred.ssid);
   selectedSSID = cred.ssid;
   enteredPassword = cred.password;
@@ -579,7 +586,7 @@ void WifiSelectionActivity::checkConnectionStatus() {
   }
 
   // Check for timeout
-  const unsigned long timeoutMs = autoConnecting ? AUTO_CONNECTION_TIMEOUT_MS : CONNECTION_TIMEOUT_MS;
+  const unsigned long timeoutMs = autoConnecting ? autoAttemptTimeout : CONNECTION_TIMEOUT_MS;
   if (millis() - connectionStartTime > timeoutMs) {
     WiFi.disconnect();
     connectionError = tr(STR_ERROR_CONNECTION_TIMEOUT);
