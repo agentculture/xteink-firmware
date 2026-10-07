@@ -1601,8 +1601,9 @@ void EpubReaderActivity::renderBook() {
         if (const auto prev = section->loadPage(section->currentPage - 1)) {
           std::vector<line_window::Element> els;
           lineElements(*prev, els);
-          const int last = line_window::prevParagraph(els.data(), els.size(), line_window::unitCount(els.data(), els.size()),
-                                                      renderer.getLineHeight(SETTINGS.getReaderFontId()));
+          const int last =
+              line_window::prevParagraph(els.data(), els.size(), line_window::unitCount(els.data(), els.size()),
+                                         renderer.getLineHeight(SETTINGS.getReaderFontId()));
           const line_window::Position pos{section->currentPage - 1, last > 0 ? last : 0};
           section->currentPage = pos.page;
           lineOffset = pos.offset;
