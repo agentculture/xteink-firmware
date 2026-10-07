@@ -40,7 +40,7 @@ struct Outcome {
 // before TLS. `itemBudgetMs` > 0 stops starting new downloads after that long
 // (the item in flight completes); later items stay queued for the next sync.
 // The result is persisted for the home status line unless cancelled.
-Outcome run(GfxRenderer* renderer, const Callbacks& callbacks, uint32_t itemBudgetMs = 0);
+Outcome run(const GfxRenderer* renderer, const Callbacks& callbacks, uint32_t itemBudgetMs = 0);
 
 // Wi-Fi join hook (WifiSelectionActivity): runs a bounded sync when a device
 // key is provisioned, no book is open and the heap allows it.
