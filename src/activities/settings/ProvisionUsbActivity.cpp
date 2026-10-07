@@ -6,6 +6,7 @@
 #include <Memory.h>
 #include <esp_mac.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 
@@ -38,9 +39,9 @@ prov::Error applyRequest(const prov::Request& req, size_t& networksSaved) {
 
   // Pre-check the 8-network cap so nothing is half-applied for that reason.
   size_t resulting = req.replaceNetworks ? 0 : WIFI_STORE.getCredentialCount();
-  for (const auto& n : req.networks) {
-    if (req.replaceNetworks || !WIFI_STORE.hasSavedCredential(n.ssid)) resulting++;
-  }
+  resulting += static_cast<size_t>(std::count_if(req.networks.begin(), req.networks.end(), [&req](const auto& n) {
+    return req.replaceNetworks || !WIFI_STORE.hasSavedCredential(n.ssid);
+  }));
   if (resulting > prov::kMaxNetworks) return prov::Error::TooManyNetworks;
 
   const std::string* key = req.deviceKey ? &*req.deviceKey : nullptr;
@@ -49,12 +50,14 @@ prov::Error applyRequest(const prov::Request& req, size_t& networksSaved) {
   if ((key || lan || tun) && !xteink::config::setAll(key, lan, tun)) return prov::Error::StorageError;
 
   if (req.replaceNetworks) {
-    for (const auto& s : WIFI_STORE.getCredentialSummaries()) {
-      if (!WIFI_STORE.removeCredential(s.ssid)) return prov::Error::StorageError;
+    const auto saved = WIFI_STORE.getCredentialSummaries();
+    if (std::any_of(saved.begin(), saved.end(), [](const auto& s) { return !WIFI_STORE.removeCredential(s.ssid); })) {
+      return prov::Error::StorageError;
     }
   }
-  for (const auto& n : req.networks) {
-    if (!WIFI_STORE.addCredential(n.ssid, n.password)) return prov::Error::StorageError;
+  if (std::any_of(req.networks.begin(), req.networks.end(),
+                  [](const auto& n) { return !WIFI_STORE.addCredential(n.ssid, n.password); })) {
+    return prov::Error::StorageError;
   }
   networksSaved = WIFI_STORE.getCredentialCount();
   return prov::Error::None;

@@ -21,6 +21,8 @@
 #include <cstddef>
 #include <cstring>
 #include <ctime>
+#include <iterator>
+#include <numeric>
 #include <string>
 #include <utility>
 #include <vector>
@@ -464,7 +466,8 @@ bool placeFile(const QueueItem& item, const Manifest& m, const std::vector<std::
 std::vector<InventoryEntry> inventoryOf(const Manifest& m, const std::vector<std::string>& modified) {
   std::vector<InventoryEntry> inv;
   inv.reserve(m.files.size());
-  for (const auto& f : m.files) inv.push_back(InventoryEntry{f.sha256, !contains(modified, f.path)});
+  std::transform(m.files.begin(), m.files.end(), std::back_inserter(inv),
+                 [&modified](const auto& f) { return InventoryEntry{f.sha256, !contains(modified, f.path)}; });
   return inv;
 }
 
@@ -525,7 +528,7 @@ int64_t reportFreeBytes(const int64_t pendingBytes, bool& measured) {
 
 }  // namespace
 
-Outcome run(GfxRenderer* renderer, const Callbacks& cb, const uint32_t itemBudgetMs) {
+Outcome run(const GfxRenderer* renderer, const Callbacks& cb, const uint32_t itemBudgetMs) {
   Outcome out;
   const uint32_t started = millis();
   const std::string key = config::getDeviceKey();
@@ -666,8 +669,9 @@ Outcome run(GfxRenderer* renderer, const Callbacks& cb, const uint32_t itemBudge
   // The cached free space was only checked against an empty queue; when the
   // queue would leave it tight, measure the card before writing (sd_full).
   if (!freeMeasured) {
-    int64_t pendingBytes = 0;
-    for (const QueueItem& item : queue.items) pendingBytes += item.size > 0 ? item.size : 0;
+    const int64_t pendingBytes =
+        std::accumulate(queue.items.begin(), queue.items.end(), int64_t{0},
+                        [](const int64_t sum, const QueueItem& item) { return sum + (item.size > 0 ? item.size : 0); });
     report.freeSdBytes = reportFreeBytes(pendingBytes, freeMeasured);
   }
   int64_t writtenBytes = 0;
@@ -758,9 +762,8 @@ Outcome run(GfxRenderer* renderer, const Callbacks& cb, const uint32_t itemBudge
     bool changed = false;
     for (const std::string& sha : queue.deletes) {
       std::vector<DeliveredFile> matches;
-      for (const auto& f : manifest.files) {
-        if (f.sha256 == sha) matches.push_back(f);
-      }
+      std::copy_if(manifest.files.begin(), manifest.files.end(), std::back_inserter(matches),
+                   [&sha](const auto& f) { return f.sha256 == sha; });
       for (const auto& f : matches) {
         std::string current;
         if (contains(modified, f.path) || !hashFile(f.path, hashBuf.get(), current) || !shouldDelete(f, sha, current)) {
