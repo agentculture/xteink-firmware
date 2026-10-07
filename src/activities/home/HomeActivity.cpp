@@ -26,6 +26,7 @@
 #include "activities/plugins/PluginCatalogActivity.h"  // anyPluginInstalled()
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "xteink/XteinkSync.h"
 
 int HomeActivity::getMenuItemCount() const {
   int count = 4;  // File Browser, Library, File transfer, Settings
@@ -546,6 +547,10 @@ void HomeActivity::render(RenderLock&&) {
       metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - recentBooks.size(),
       [&menuItems](int index) { return std::string(menuItems[index]); },
       [&menuIcons](int index) { return menuIcons[index]; });
+  // xteink fork: one-line sync status under the menu.
+  xteink::sync::drawHomeStatusLine(
+      renderer, metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset +
+                    static_cast<int>(menuItems.size()) * (GUI.getMenuRowHeight(renderer) + metrics.menuSpacing));
 
   const auto labels = mappedInput.mapLabels(recentBooks.empty() ? "" : tr(STR_RESUME), tr(STR_SELECT), tr(STR_DIR_UP),
                                             tr(STR_DIR_DOWN));

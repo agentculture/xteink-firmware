@@ -15,6 +15,7 @@
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <SPI.h>
 #include <TrustedTime.h>
 #include <VectorFontSupport.h>
@@ -34,7 +35,9 @@
 #include "WifiCredentialStore.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
+#include "activities/settings/ProvisionUsbActivity.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
+#include "activities/settings/XteinkSyncActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "platform/UsbSerialJtagHandoff.h"
@@ -42,6 +45,9 @@
 #include "util/PluginEvents.h"
 #include "util/ScreenshotUtil.h"
 #include "util/Timezones.h"
+#include "xteink/KeyDiag.h"
+#include "xteink/ProvisioningProtocol.h"
+#include "xteink/ResetBoot.h"
 
 #if CROSSPOINT_VECTOR_FONTS
 // Rendering (incl. FreeType TTF rasterization) runs on the Arduino loop task.
@@ -145,7 +151,8 @@ constexpr uint32_t SILENT_REBOOT_TARGET_HOME = 0;
 constexpr uint32_t SILENT_REBOOT_TARGET_READER = 1;
 constexpr uint32_t SILENT_REBOOT_TARGET_SETTINGS = 2;
 constexpr uint32_t SILENT_REBOOT_TARGET_JOIN_NETWORK = 3;
-constexpr uint32_t SILENT_REBOOT_TARGET_MAX = SILENT_REBOOT_TARGET_JOIN_NETWORK;
+constexpr uint32_t SILENT_REBOOT_TARGET_XTEINK_SYNC = 4;
+constexpr uint32_t SILENT_REBOOT_TARGET_MAX = SILENT_REBOOT_TARGET_XTEINK_SYNC;
 constexpr uint32_t SILENT_REBOOT_LIGHT_ON = 1U << 0;
 
 // How the device is coming back to life, resolved once at boot. Both resume
@@ -209,6 +216,18 @@ void silentRestartToJoinNetwork() {
 #endif
   armSilentReboot(SILENT_REBOOT_TARGET_JOIN_NETWORK);
   LOG_DBG("MAIN", "Silent restart (target=join-network)");
+  GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+  delay(50);
+  ESP.restart();
+}
+
+void silentRestartToXteinkSync() {
+  if (deepSleepInProgress) return;
+#if FREEINK_CAP_TOUCH
+  if (BoardConfig::hasTouch()) return;
+#endif
+  armSilentReboot(SILENT_REBOOT_TARGET_XTEINK_SYNC);
+  LOG_DBG("MAIN", "Silent restart (target=xteink-sync)");
   GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
   delay(50);
   ESP.restart();
@@ -460,12 +479,20 @@ void setup() {
   gpio.begin();
   powerManager.begin();
 
-  const auto wakeupReason = gpio.getWakeupReason();
+  const auto detectedWakeupReason = gpio.getWakeupReason();
   // Sample the wake hold now — a click wake is released within milliseconds of
   // boot — but defer the sleep-or-boot decision until SETTINGS is loaded below:
   // click-to-wake is a setting, and an X4 battery power-off cuts all power, so
   // only SD state survives to the next boot.
-  const bool wakeHoldVerified = wakeupReason != HalGPIO::WakeupReason::PowerButton || gpio.verifyPowerButtonWakeup();
+  const bool wakeHoldVerified =
+      detectedWakeupReason != HalGPIO::WakeupReason::PowerButton || gpio.verifyPowerButtonWakeup();
+  // xteink d5: the X3's top key resets the chip (POWERON, no wake cause), which
+  // upstream reads as an unheld power-button boot and puts back to sleep. With
+  // a healthy battery it boots like any cold boot instead (xteink/ResetBoot.h).
+  const auto wakeupReason = xteink::resetboot::shouldBootAfterReset(
+                                detectedWakeupReason == HalGPIO::WakeupReason::PowerButton, wakeHoldVerified)
+                                ? HalGPIO::WakeupReason::Other
+                                : detectedWakeupReason;
 
   // X4 Pro and X4 Classic both map BTN_UP to GPIO0 — an ESP32-S3 boot strap — so
   // gate recovery on the non-strap Down key (GPIO7) to avoid a stuck-in-recovery loop.
@@ -630,6 +657,14 @@ void setup() {
     // Rebooted on the way *into* File Transfer > Join Network for a fresh heap;
     // resume that flow directly instead of landing on home.
     activityManager.goToJoinNetwork();
+  } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_XTEINK_SYNC) {
+    // "Sync books now" rebooted for a fresh heap; resume it (no second reboot).
+    auto syncActivity = makeUniqueNoThrow<XteinkSyncActivity>(renderer, mappedInputManager, /*freshHeap=*/true);
+    if (syncActivity) {
+      activityManager.replaceActivity(std::move(syncActivity));
+    } else {
+      activityManager.goHome();
+    }
   } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_SETTINGS) {
     // Back out of the WiFi rows and the user is where they left off, not on Home.
     activityManager.goToSettings();
@@ -679,6 +714,7 @@ void loop() {
 
   gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP);
   mappedInputManager.update();
+  xteink::keydiag::poll();  // xteink: debug builds only (KeyDiag.h)
 
   if (activityManager.requiresExclusiveStorageLoop()) {
     // USB Drive handed the raw SD card to the host. Do not run screenshots,
@@ -722,9 +758,15 @@ void loop() {
 
   // Handle incoming serial commands,
   // nb: we use logSerial from logging to avoid deprecation warnings
-  if (logSerial.available() > 0) {
+  // While the Provision via USB screen is open it owns the serial RX path.
+  if (!ProvisionUsbActivity::isActive() && logSerial.available() > 0) {
     String line = logSerial.readStringUntil('\n');
-    if (line.startsWith("CMD:")) {
+    if (xteink::prov::isProvisioningLine(line.c_str(), line.length())) {
+      // Provisioning is only accepted on the explicit screen; say so rather than
+      // dropping the line silently. The line is not parsed or logged.
+      logSerial.print("\n");
+      logSerial.print(xteink::prov::buildErrLine(xteink::prov::Error::NotInProvisioningMode).c_str());
+    } else if (line.startsWith("CMD:")) {
       String cmd = line.substring(4);
       cmd.trim();
       if (cmd == "SCREENSHOT") {

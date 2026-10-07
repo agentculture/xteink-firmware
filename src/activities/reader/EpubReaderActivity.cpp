@@ -33,11 +33,13 @@
 #include "EpubReaderUtils.h"
 #include "KOReaderCredentialStore.h"
 #include "KOReaderSyncActivity.h"
+#include "LineWindow.h"
 #include "MappedInputManager.h"
 #include "ProgressMapper.h"
 #include "QrDisplayActivity.h"
 #include "ReaderActivity.h"
 #include "ReaderFontSizes.h"
+#include "ReaderLongPress.h"
 #include "ReaderToolbarUi.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
@@ -50,6 +52,7 @@
 #include "util/BookmarkUtil.h"
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
+#include "xteink/X3KeyProfile.h"
 
 namespace {
 // The X4 Pro and X4 Classic carry the X4's panel but sit outside isXteinkDevice()
@@ -527,6 +530,17 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  // Zoom mode owns all input while its scale is up (Left/Right step the size
+  // instead of turning pages); the zoom key opens it.
+  if (zoom.active()) {
+    handleZoomInput();
+    return;
+  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Zoom) && section && !endOfBookMenuActive()) {
+    enterZoom(true);
+    return;
+  }
+
   switch (mappedInput.homeButtonAction()) {
     case HomeButtonAction::ReaderMenu:
     case HomeButtonAction::Bookmark:
@@ -583,6 +597,13 @@ void EpubReaderActivity::loop() {
   const bool confirmLongPressed = !endOfBookMenuOpen && confirmHoldMs != 0 &&
                                   mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, confirmHoldMs);
   const bool confirmReleased = mappedInput.wasReleased(MappedInputManager::Button::Confirm);
+  if (confirmLongPressed &&
+      reader_long_press::confirmHoldZooms(mappedInput.hasX3KeyProfile(), SETTINGS.longPressMenuFunction)) {
+    // X3 profile (xteink d5): long-press Confirm opens zoom mode; the release
+    // is swallowed, so the short-press reader menu does not open as well.
+    if (section) enterZoom(true);
+    return;
+  }
   if (confirmLongPressed) {
     switch (SETTINGS.longPressMenuFunction) {
       case CrossPointSettings::LP_MENU_BOOKMARK:
@@ -661,6 +682,15 @@ void EpubReaderActivity::loop() {
     }
   }
 
+  // X3 profile (xteink d5): long-press Back toggles portrait/landscape. It fires
+  // before the 1 s long-press Back to the file browser, which then stays inert.
+  if (!endOfBookMenuOpen && reader_long_press::backHoldRotates(mappedInput.hasX3KeyProfile()) &&
+      mappedInput.wasLongPressed(MappedInputManager::Button::Back, reader_long_press::HOLD_MS)) {
+    applyOrientation(reader_long_press::toggledOrientation(SETTINGS.orientation));
+    requestUpdate();
+    return;
+  }
+
   if (footnoteDepth > 0 && mappedInput.wasReleased(MappedInputManager::Button::Back) &&
       mappedInput.getHeldTime() < ReaderUtils::GO_BACK_OR_HOME_MS) {
     restoreSavedPosition();
@@ -692,12 +722,31 @@ void EpubReaderActivity::loop() {
     }
     const bool forward = pendingManualTurn > 0;
     pendingManualTurn = 0;
+    const int spineBeforeTurn = currentSpineIndex;
     const bool succeeded = pageTurn(forward);
+    if (succeeded) carryLineOffsetAfterTurn(spineBeforeTurn);
     notePageTurn(forward, succeeded);
     if (succeeded && pendingManualTurnTouch) haptic_feedback::touchAction();
     pendingManualTurnTouch = false;
     requestUpdate();
     return;
+  }
+
+  // X3 key profile (xteink d3): Up/Down (bottom keys 4.3/4.4) move the view
+  // one paragraph, with the same orientation swap as list navigation.
+  if (mappedInput.hasX3KeyProfile() && section && !endOfBookMenuOpen && !atEndOfBook) {
+    const bool swapped = mappedInput.isNavDirectionSwapped();
+    int step = 0;
+    if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+      step = xteink::x3keys::listStep(xteink::x3keys::UP, swapped);
+    } else if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+      step = xteink::x3keys::listStep(xteink::x3keys::DOWN, swapped);
+    }
+    if (step != 0) {
+      if (turnGuardActive) return;  // drop it, like a key bounce during a render
+      lineScroll(step);
+      return;
+    }
   }
 
   auto [prevTriggered, nextTriggered, fromTilt] = ReaderUtils::detectPageTurn(mappedInput);
@@ -747,7 +796,9 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  const int spineBeforeTurn = currentSpineIndex;
   const bool succeeded = pageTurn(!prevTriggered);
+  if (succeeded) carryLineOffsetAfterTurn(spineBeforeTurn);
   notePageTurn(!prevTriggered, succeeded);
   if (succeeded && (touch.prev || touch.next)) haptic_feedback::touchAction();
   requestUpdate();
@@ -889,6 +940,9 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
           });
       break;
     }
+    case EpubReaderMenuActivity::MenuAction::ZOOM:
+      enterZoom(false);
+      break;
     case EpubReaderMenuActivity::MenuAction::FOOTNOTES: {
       openFootnoteSelect(true);
       break;
@@ -995,6 +1049,9 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
 }
 
 unsigned long EpubReaderActivity::confirmLongPressThreshold() const {
+  if (reader_long_press::confirmHoldZooms(mappedInput.hasX3KeyProfile(), SETTINGS.longPressMenuFunction)) {
+    return reader_long_press::HOLD_MS;
+  }
   switch (SETTINGS.longPressMenuFunction) {
     case CrossPointSettings::LP_MENU_BOOKMARK:
     case CrossPointSettings::LP_MENU_DICTIONARY:
@@ -1070,6 +1127,7 @@ void EpubReaderActivity::applyOrientation(const uint8_t orientation) {
   }
 
   RenderLock lock(*this);
+  resetLineScroll();  // xteink d3: the window belongs to the old layout
   if (section) {
     rememberCurrentContentOffset();
     cachedSpineIndex = currentSpineIndex;
@@ -1535,7 +1593,27 @@ void EpubReaderActivity::renderBook() {
   updateBookmarkFlag();
 
   {
+    // Paragraph scroll back from offset 0 (xteink d3): the window moves to the
+    // last paragraph of the previous page, only known once that page is loaded.
+    if (linePendingBack) {
+      linePendingBack = false;
+      if (lineAnchorValid() && lineOffset == 0 && section->currentPage > 0) {
+        if (const auto prev = section->loadPage(section->currentPage - 1)) {
+          std::vector<line_window::Element> els;
+          lineElements(*prev, els);
+          const int last =
+              line_window::prevParagraph(els.data(), els.size(), line_window::unitCount(els.data(), els.size()),
+                                         renderer.getLineHeight(SETTINGS.getReaderFontId()));
+          const line_window::Position pos{section->currentPage - 1, last > 0 ? last : 0};
+          section->currentPage = pos.page;
+          lineOffset = pos.offset;
+          lineAnchorSpine = currentSpineIndex;
+          lineAnchorPage = pos.page;
+        }
+      }
+    }
     auto p = section->loadPage(section->currentPage);
+    if (p && mappedInput.hasX3KeyProfile()) composeLineWindow(*p);
     if (!p) {
       LOG_ERR("ERS", "Failed to load page from SD - clearing section cache");
       automaticPageTurnActive = false;
@@ -1601,6 +1679,12 @@ void EpubReaderActivity::renderBook() {
   }
 
   pageBufferStale = false;  // the page is back in the framebuffer
+
+  // Zoom mode survives a re-render (it needs the scale back on top of the page).
+  if (zoom.active() && overlay == Overlay::None) {
+    paintZoomScale();
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  }
 
   // Toolbar menu: overlay the toolbar / panel on top of the freshly rendered page.
   if (overlay != Overlay::None && usesToolbarMenu()) {
@@ -2558,7 +2642,222 @@ void EpubReaderActivity::applyReaderTextSettings() {
     cachedChapterTotalPageCount = section->pageCount;
     nextPageNumber = section->currentPage;
   }
-  section.reset();  // force re-pagination with the new settings
+  section.reset();    // force re-pagination with the new settings
+  resetLineScroll();  // xteink d3: the window belongs to the old pagination
+}
+
+// --- Paragraph scroll (xteink d3) ---------------------------------------------
+
+bool EpubReaderActivity::lineAnchorValid() const {
+  return section && lineAnchorSpine == currentSpineIndex && lineAnchorPage == section->currentPage;
+}
+
+void EpubReaderActivity::lineScroll(const int step) {
+  {
+    RenderLock lock;
+    if (!section || section->pageCount == 0) return;
+    clearDeferredReposition();
+    if (!lineAnchorValid()) {
+      // Fresh start on the page on screen (lineEls is from its render).
+      lineOffset = 0;
+      linePendingBack = false;
+      lineAnchorSpine = currentSpineIndex;
+      lineAnchorPage = section->currentPage;
+    }
+    const line_window::Position at{section->currentPage, lineOffset};
+    const int pitchFallback = renderer.getLineHeight(SETTINGS.getReaderFontId());
+    if (step > 0) {
+      const bool hasNext = section->currentPage + 1 < static_cast<int>(section->pageCount);
+      const int nextOnPage = line_window::nextParagraph(lineEls.data(), lineEls.size(), lineOffset, pitchFallback);
+      const auto pos = line_window::paragraphForward(at, nextOnPage, hasNext);
+      if (pos.page == at.page && pos.offset == at.offset) return;
+      section->currentPage = pos.page;
+      lineOffset = pos.offset;
+      lineAnchorPage = pos.page;
+    } else if (lineOffset > 0) {
+      lineOffset = line_window::prevParagraph(lineEls.data(), lineEls.size(), lineOffset, pitchFallback);
+    } else if (section->currentPage > 0) {
+      linePendingBack = true;  // resolved by renderBook(), which loads the previous page
+    } else {
+      return;  // top of the chapter
+    }
+    lastPageTurnTime = millis();
+  }
+  requestUpdate();
+}
+
+void EpubReaderActivity::carryLineOffsetAfterTurn(const int spineBefore) {
+  if (!mappedInput.hasX3KeyProfile()) return;
+  RenderLock lock;
+  // A turn within the chapter keeps the offset (the next window is offset by
+  // the same lines); a chapter change drops it. renderBook() clamps it to the
+  // new page and drops it on the chapter's last page.
+  if (section && currentSpineIndex == spineBefore && lineOffset > 0) {
+    lineAnchorSpine = currentSpineIndex;
+    lineAnchorPage = section->currentPage;
+  } else {
+    resetLineScroll();
+  }
+}
+
+void EpubReaderActivity::lineElements(const Page& src, std::vector<line_window::Element>& out) {
+  out.clear();
+  out.reserve(src.elements.size());
+  for (const auto& el : src.elements) {
+    const int16_t height =
+        el->getTag() == TAG_PageImage ? static_cast<const PageImage&>(*el).getImageBlock().getHeight() : 0;
+    out.push_back({el->yPos, height});
+  }
+}
+
+void EpubReaderActivity::composeLineWindow(Page& page) {
+  using line_window::Element;
+
+  if (!lineAnchorValid()) {
+    lineOffset = 0;
+    linePendingBack = false;
+  }
+  // Two small scratch arrays (4 bytes per element, a page holds a few dozen):
+  // heap rather than stack, they are only alive for this call. A copy of `cur`
+  // stays in lineEls for the next paragraph step.
+  std::vector<Element> cur;
+  lineElements(page, cur);
+  const int units = line_window::unitCount(cur.data(), cur.size());
+  lineEls = cur;
+  const bool hasNext = section->currentPage + 1 < static_cast<int>(section->pageCount);
+  lineOffset = line_window::carriedOffset(lineOffset, units, hasNext);
+  if (lineOffset == 0) return;
+  lineAnchorSpine = currentSpineIndex;
+  lineAnchorPage = section->currentPage;
+
+  // The second resident page: only its first lines are kept, moved (not
+  // copied) into the window; the rest is freed when it leaves scope.
+  auto next = section->loadPage(section->currentPage + 1);
+  if (!next) {
+    lineOffset = 0;
+    return;
+  }
+  std::vector<Element> nxt;
+  lineElements(*next, nxt);
+  const int pitchFallback = renderer.getLineHeight(SETTINGS.getReaderFontId());
+  const auto plan = line_window::plan(cur.data(), cur.size(), nxt.data(), nxt.size(), lineOffset, pitchFallback);
+  if (!plan.valid) return;
+
+  auto& els = page.elements;
+  els.erase(els.begin(), els.begin() + static_cast<std::ptrdiff_t>(plan.firstKept));
+  for (auto& el : els) el->yPos = static_cast<int16_t>(el->yPos + plan.curShift);
+  els.reserve(els.size() + plan.nextTaken);
+  for (size_t i = 0; i < plan.nextTaken; ++i) {
+    next->elements[i]->yPos = static_cast<int16_t>(next->elements[i]->yPos + plan.nextShift);
+    els.push_back(std::move(next->elements[i]));
+  }
+}
+
+// --- Zoom mode (xteink fork) -------------------------------------------------
+
+static_assert(reader_long_press::LP_MENU_DISABLED == CrossPointSettings::LP_MENU_DISABLED, "long-press menu value");
+static_assert(reader_long_press::HOLD_MS == ReaderUtils::SKIP_HOLD_MS, "X3 long-press hold");
+
+void EpubReaderActivity::enterZoom(const bool paintNow) {
+  // Only the sizes the active family ships are offered (built-in 12/14/16/18,
+  // vector 8-22, or the installed .cpfont sizes).
+  if (!zoom.enter(readerFontPointSizes(&sdFontSystem.registry(), SETTINGS.sdFontFamilyName), SETTINGS.fontPointSize)) {
+    return;
+  }
+  automaticPageTurnActive = false;
+  mappedInput.resetHomeButtonInput();
+  if (paintNow && section && !pageBufferStale) {
+    // The page is on screen and in the framebuffer: draw the scale over it and
+    // push one refresh, no re-render (same approach as openOverlay()).
+    RenderLock lock;
+    settleOverlayRefresh();
+    paintZoomScale();
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  } else {
+    requestUpdate();  // renderBook() draws the scale once the page is back
+  }
+}
+
+void EpubReaderActivity::handleZoomInput() {
+  using Btn = MappedInputManager::Button;
+  // Right/PageForward = larger, mirrored with the control axis exactly like
+  // ReaderUtils::detectPageTurn() does for page turns.
+  const bool swap = mappedInput.isNavDirectionSwapped();
+  const bool larger =
+      mappedInput.wasReleased(swap ? Btn::Left : Btn::Right) || mappedInput.wasReleased(Btn::PageForward);
+  const bool smaller = mappedInput.wasReleased(swap ? Btn::Right : Btn::Left) || mappedInput.wasReleased(Btn::PageBack);
+
+  if (mappedInput.wasReleased(Btn::Back)) {
+    exitZoom(false);
+  } else if (mappedInput.wasReleased(Btn::Zoom) || mappedInput.wasReleased(Btn::Confirm) ||
+             mappedInput.wasLongPressed(Btn::Confirm, reader_long_press::HOLD_MS)) {
+    exitZoom(true);
+  } else if ((larger && zoom.stepLarger()) || (smaller && zoom.stepSmaller())) {
+    // Selection only: no reflow, no settings write. Redraw just the scale.
+    RenderLock lock;
+    paintZoomScale();
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  }
+}
+
+void EpubReaderActivity::exitZoom(const bool commit) {
+  const auto out = commit ? zoom.commit() : zoom.cancel();
+  {
+    RenderLock lock;
+    resetLineScroll();  // xteink d3: zoom always restarts the window at the page top
+  }
+  mappedInput.resetHomeButtonInput();
+  if (out.changed) {
+    // The single reflow. applyReaderTextSettings() records the visible text
+    // offset first, so the same passage is on screen at the new size.
+    SETTINGS.fontPointSize = out.pt;
+    applyReaderTextSettings();
+  }
+  requestUpdate();  // repaint the page without the scale (reflowed iff changed)
+}
+
+void EpubReaderActivity::paintZoomScale() {
+  const int width = renderer.getScreenWidth();
+  const int height = renderer.getScreenHeight();
+  const auto& sizes = zoom.sizes();
+  if (sizes.empty()) return;
+
+  constexpr int kPad = 6;
+  constexpr int kMargin = 8;
+  const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
+  const int smallH = renderer.getLineHeight(SMALL_FONT_ID);
+  const int boxW = width - 2 * kMargin;
+  const int boxH = kPad * 3 + lineH * 2 + smallH;
+  const int boxX = kMargin;
+  const int boxY = height - boxH - kMargin;
+
+  // Opaque panel: nothing of the page shows through, so a redraw needs no
+  // snapshot of the page underneath.
+  renderer.fillRect(boxX, boxY, boxW, boxH, false);
+  renderer.drawRect(boxX, boxY, boxW, boxH, 2, true);
+
+  char title[24];
+  snprintf(title, sizeof(title), "%s %u pt", tr(STR_ZOOM), static_cast<unsigned>(zoom.selectedPt()));
+  renderer.drawText(UI_10_FONT_ID, boxX + (boxW - renderer.getTextWidth(UI_10_FONT_ID, title)) / 2, boxY + kPad, title);
+
+  // One cell per available size; the selected one is inverted.
+  const int cellW = (boxW - 2 * kPad) / static_cast<int>(sizes.size());
+  const int rowY = boxY + kPad * 2 + lineH;
+  for (size_t i = 0; i < sizes.size(); ++i) {
+    char label[8];
+    snprintf(label, sizeof(label), "%u", static_cast<unsigned>(sizes[i]));
+    const int cellX = boxX + kPad + static_cast<int>(i) * cellW;
+    const bool selected = i == zoom.selectedIndex();
+    if (selected) renderer.fillRect(cellX, rowY, cellW, lineH, true);
+    renderer.drawText(UI_10_FONT_ID, cellX + (cellW - renderer.getTextWidth(UI_10_FONT_ID, label)) / 2, rowY, label,
+                      !selected);
+  }
+
+  const char* hint = tr(STR_ZOOM_HINT);
+  if (renderer.getTextWidth(SMALL_FONT_ID, hint) <= boxW - 2 * kPad) {
+    renderer.drawText(SMALL_FONT_ID, boxX + (boxW - renderer.getTextWidth(SMALL_FONT_ID, hint)) / 2,
+                      rowY + lineH + kPad, hint);
+  }
 }
 
 // The More panel carries everything the classic list menu offers except the

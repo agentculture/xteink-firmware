@@ -15,6 +15,9 @@ void silentRestartToSettings();  // settings screen
 // no-op on touch boards (a soft reset would cycle their externally-powered
 // rails); the caller then proceeds without a reboot.
 void silentRestartToJoinNetwork();
+// xteink fork: reboot into "Sync books now" on a pristine heap for the TLS
+// session. Same touch-board / sleep exceptions as silentRestartToJoinNetwork().
+void silentRestartToXteinkSync();
 
 // Reboots immediately after an activity releases exclusive raw storage. The
 // RTC target ensures setup() lands on Home instead of resuming a reader.

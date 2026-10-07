@@ -1,0 +1,113 @@
+name: Xteink CI (build every Xteink env)
+
+# xteink fork: gate every Xteink model build on our integration branches.
+# Upstream's ci.yml only runs on pushes to master; this fork's default branch is
+# develop and our work lands on feat/** branches.
+on:
+  push:
+    branches: [develop, "feat/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  guards:
+    # t13: no listening service without a menu action, verified TLS in the
+    # shared downloader, fork-only OTA feed, pinned CA bundle (docs/xteink/tls.md).
+    name: Xteink security guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Service and TLS placement guard
+        run: python3 scripts/xteink-check-services.py
+      - name: Pinned CA bundle
+        run: python3 test/test_xteink_ca_bundle.py
+
+  build:
+    name: Xteink build ${{ matrix.env }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Short board-specific names keep pull-request artifacts easy to identify.
+        # The release workflow applies the published crosspoint-<version>-<device>.bin names.
+        include:
+          - env: default   # ESP32-C3: Xteink X3 + X4 (one image, runtime-detected)
+            asset: firmware.bin
+          - env: x4pro     # ESP32-S3: Xteink X4 Pro
+            asset: firmware-x4pro.bin
+          - env: x4c       # ESP32-S3: Xteink X4 Classic
+            asset: firmware-x4c.bin
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: false
+
+      - name: Install PlatformIO Core
+        run: |
+          uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
+          # platform-espressif32's builder/main.py imports these unconditionally; its own
+          # penv bootstrap (builder/penv_setup.py) is supposed to install them automatically
+          # but isn't picking them up reliably in this runner image, so pin them explicitly.
+          uv pip install --system -U "littlefs-python>=0.16.0" "fatfs-ng>=0.1.14" "pyyaml>=6.0.2" \
+            "rich-click>=1.8.6" "zopfli>=0.2.2" "intelhex>=2.3.0" "rich>=14.0.0" "urllib3<2" \
+            "cryptography>=45.0.3" "certifi>=2025.8.3" "ecdsa>=0.19.1" "bitstring>=4.3.1" \
+            "reedsolo>=1.5.3,<1.8" "esp-idf-size>=2.0.0" "esp-coredump>=1.14.0"
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-v3-${{ runner.os }}-${{ matrix.env }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: pio-v3-${{ runner.os }}-${{ matrix.env }}-
+
+      - name: Pin pioarduino core inside the platform penv
+        run: |
+          set -euo pipefail
+          # Envs with custom_sdkconfig (default, sticky) run a nested `pio run` from
+          # ~/.platformio/penv. The platform bootstraps that penv with an open-ended
+          # "pioarduino>=6.1.19", which now resolves to 6.2.0. That core wants
+          # tool-scons 4.11.1 while platform 55.03.311 pins 4.8.1; the two keep
+          # reinstalling over each other and the running SCons loses its package
+          # mid-build ("No module named 'SCons.Tool.FortranCommon'"). Keep the penv
+          # core on the same version as the outer core installed above.
+          # See https://github.com/pioarduino/platform-espressif32/issues/529
+          pio pkg install -e ${{ matrix.env }}
+          uv pip install --python ~/.platformio/penv/bin/python "pioarduino==6.1.19"
+          ~/.platformio/penv/bin/pio --version
+
+      - name: Build ${{ matrix.env }} firmware
+        run: |
+          set -euo pipefail
+          pio run -e ${{ matrix.env }} | tee pio.log
+
+      - name: Extract firmware stats
+        run: |
+          set -euo pipefail
+          ram_line="$(grep -E "RAM:\\s" -m1 pio.log || true)"
+          flash_line="$(grep -E "Flash:\\s" -m1 pio.log || true)"
+          echo "ram_line=${ram_line}" >> "$GITHUB_OUTPUT"
+          echo "flash_line=${flash_line}" >> "$GITHUB_OUTPUT"
+          {
+            echo "## ${{ matrix.env }} firmware build stats"
+            if [ -n "$ram_line" ]; then echo "- ${ram_line}"; else echo "- RAM: not found"; fi
+            if [ -n "$flash_line" ]; then echo "- ${flash_line}"; else echo "- Flash: not found"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.asset }}
+          path: .pio/build/${{ matrix.env }}/firmware.bin
+          if-no-files-found: error
