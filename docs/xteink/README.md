@@ -11,7 +11,7 @@ client for the self-hosted xteink library server (LAN first, then
 
 | Model | MCU | PlatformIO env | Verification level |
 |-------|-----|----------------|--------------------|
-| X3 | ESP32-C3 | `default` (X3 + X4 in one image) | build-verified; hardware verification planned (unit on hand) |
+| X3 | ESP32-C3 | `default` (X3 + X4 in one image) | build-verified; hardware-verified (2026-10-07: sync over LAN and hotspot + tunnel, offline reading, X3 key profile; evidence in agentculture/xteink `docs/evidence/`) |
 | X4 | ESP32-C3 | `default` | build-verified |
 | X4 Pro | ESP32-S3 | `x4pro` | build-verified |
 | X4 Classic | ESP32-S3 | `x4c` | build-verified |
