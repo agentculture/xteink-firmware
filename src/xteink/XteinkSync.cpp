@@ -31,6 +31,7 @@
 #include "DailyRoutine.h"
 #include "FreeSpaceCache.h"
 #include "OtaHealth.h"
+#include "StagedWriter.h"
 #include "XteinkConfig.h"
 #include "activities/Activity.h"  // ActivityManager + RenderLock
 #include "components/UITheme.h"
@@ -80,6 +81,11 @@ constexpr uint32_t kMinFreeHeapPlain = 16000;
 constexpr uint32_t kMinMaxAllocPlain = 8000;
 
 constexpr size_t kHashChunk = 2048;
+// Download writes reach the card in blocks of this size (StagedWriter.h): a
+// whole number of 512-byte sectors that divides every FAT cluster size from
+// 4 KB up, so each block is one multi-sector write inside one cluster.
+constexpr size_t kWriteBlock = 4096;
+static_assert(kWriteBlock % 512 == 0 && kWriteBlock >= kHashChunk, "block also serves as the hash buffer");
 constexpr size_t kHashYieldBytes = 32 * 1024;
 
 // Session::call results below zero that are not transport failures.
@@ -356,38 +362,56 @@ Error callError(const int status) {
 
 // GET item.url into kPartPath, hashing as it streams. A dropped connection is
 // resumed with Range inside fetchResumable; a 416 discards the partial bytes
-// and starts again from 0 once (docs/device-protocol.md, Errors).
+// and starts again from 0 once (docs/device-protocol.md, Errors). The body
+// reaches the card through a staged::Writer: kWriteBlock-sized aligned writes,
+// each retried from its own offset before the item fails (StagedWriter.h).
 Error downloadItem(const Session& session, const QueueItem& item, const Callbacks& cb, Progress& progress) {
   for (int attempt = 0; attempt < 2; ++attempt) {
     if (!heapOk(session.https)) return Error::LowMemory;
+    auto block = makeUniqueNoThrow<uint8_t[]>(kWriteBlock);
+    if (!block) return Error::LowMemory;
     Storage.remove(kPartPath);
     HalFile file;
     if (!Storage.openFileForWrite(kTag, kPartPath, file)) return Error::SdCard;
     Sha256 sha;
-    size_t written = 0;
     bool tooLong = false;
-    bool writeFailed = false;
     const size_t expected = static_cast<size_t>(item.size);
+
+    staged::Io io;
+    io.writeAt = [&file, &item](const size_t offset, const uint8_t* data, const size_t len) {
+      const unsigned long start = millis();
+      resetTaskWatchdogIfSubscribed();
+      // SdFat leaves the position wherever a failed write stopped; a retry
+      // rewrites the block from its start.
+      const bool ok = file.seek(offset) && file.write(data, len) == len;
+      if (!ok) {
+        LOG_ERR(kTag, "Item %lld: SD write of %u bytes at %u failed after %lu ms", static_cast<long long>(item.id),
+                static_cast<unsigned>(len), static_cast<unsigned>(offset), millis() - start);
+      }
+      return ok;
+    };
+    io.pause = [](const uint32_t ms) {
+      resetTaskWatchdogIfSubscribed();
+      delay(ms);
+      resetTaskWatchdogIfSubscribed();
+    };
+    staged::Writer writer(block.get(), kWriteBlock, std::move(io));
 
     freeink::FetchSink sink;
     sink.write = [&](const uint8_t* data, const size_t len) {
-      if (written + len > expected) {
+      if (writer.accepted() + len > expected) {
         tooLong = true;
         return false;
       }
-      if (file.write(data, len) != len) {
-        writeFailed = true;
-        return false;
-      }
+      if (!writer.append(data, len)) return false;
       sha.update(data, len);
-      written += len;
       return true;
     };
     // The server ignored Range and restarted the body: start the file and hash over.
     sink.rewind = [&] {
       file.close();
       sha.reset();
-      written = 0;
+      writer.restart();
       return Storage.openFileForWrite(kTag, kPartPath, file);
     };
     sink.progress = [&](const size_t bytes, size_t) {
@@ -404,8 +428,12 @@ Error downloadItem(const Session& session, const QueueItem& item, const Callback
           [&session](freeink::SecureHttpClient& http, const bool sameOrigin) { session.configure(http, sameOrigin); },
           sink, session.abortCallback());
     }
-    // Close before remove() or rename() on the same path.
-    if (file.isOpen()) file.close();
+    // Write the buffered tail of a complete body, then close (its sync writes
+    // the last partial sector and the directory entry) before remove() or
+    // rename() on the same path.
+    const bool tailOk = !result.complete || writer.finish();
+    const bool closeOk = !file.isOpen() || file.close();
+    const size_t written = writer.accepted();
 
     if (result.aborted) {
       Storage.remove(kPartPath);
@@ -416,7 +444,7 @@ Error downloadItem(const Session& session, const QueueItem& item, const Callback
       continue;
     }
     Error err = Error::None;
-    if (writeFailed) {
+    if (writer.failed() || !tailOk || (result.complete && !closeOk)) {
       err = Error::SdCard;
     } else if (result.status < 200 || result.status >= 300) {
       err = errorForStatus(result.status);
@@ -425,10 +453,22 @@ Error downloadItem(const Session& session, const QueueItem& item, const Callback
       err = Error::Download;
     } else if (sha.hex() != item.sha256) {
       err = Error::Hash;
+    } else if (writer.retries() > 0) {
+      // A rewritten block is only as good as the card's second attempt: check
+      // what is on the card, not what came over the network.
+      std::string onCard;
+      if (!hashFile(kPartPath, block.get(), onCard) || onCard != item.sha256) {
+        err = Error::SdCard;
+      } else {
+        LOG_INF(kTag, "Item %lld: %u SD write retries, file verified", static_cast<long long>(item.id),
+                static_cast<unsigned>(writer.retries()));
+      }
     }
     if (err != Error::None) {
-      LOG_ERR(kTag, "Item %lld failed: %s (status %d, %u/%u bytes)", static_cast<long long>(item.id), errorCode(err),
-              result.status, static_cast<unsigned>(written), static_cast<unsigned>(expected));
+      LOG_ERR(kTag, "Item %lld failed: %s (status %d, %u/%u bytes, %u on card, %u SD retries)",
+              static_cast<long long>(item.id), errorCode(err), result.status, static_cast<unsigned>(written),
+              static_cast<unsigned>(expected), static_cast<unsigned>(writer.durable()),
+              static_cast<unsigned>(writer.retries()));
       Storage.remove(kPartPath);
     }
     return err;
