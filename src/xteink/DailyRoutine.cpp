@@ -617,6 +617,8 @@ struct CancelCtx {
   uint32_t budgetMs;
 };
 
+// sync::Callbacks fixes the signature (bool (*)(void*)); the context is only read.
+// cppcheck-suppress constParameterCallback
 bool syncShouldCancel(void* ctx) {
   const auto* c = static_cast<const CancelCtx*>(ctx);
   return sync::budgetExpired(::millis(), c->startMs, c->budgetMs);
