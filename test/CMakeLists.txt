@@ -73,6 +73,7 @@ add_subdirectory(reader_long_press)
 add_subdirectory(reset_boot)
 add_subdirectory(line_window)
 add_subdirectory(xteink_free_space)
+add_subdirectory(xteink_staged_writer)
 
 add_subdirectory(inflate_stream)
 add_subdirectory(fs_helpers)
