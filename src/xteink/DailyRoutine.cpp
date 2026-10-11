@@ -460,7 +460,8 @@ class Routine {
     const int attempts = sameDay ? port.otaCount() : 0;
 
     port.showStage(Stage::CheckingFirmware);
-    const OtaCheck check = port.checkOta();
+    // The check may use what is left above the sync's reserve.
+    const OtaCheck check = port.checkOta(remaining() - kSyncReserveMs);
     if (check.error != sync::Error::None) {
       fw = fwFailed(check.error);
       return false;
@@ -690,9 +691,9 @@ class DevicePort final : public RoutinePort {
     nvsWrite(kNvsNote, [b](nvs_handle_t h) { return nvs_set_u8(h, kNvsNote, b); });
   }
 
-  OtaCheck checkOta() override {
+  OtaCheck checkOta(const uint32_t budgetMs) override {
     OtaCheck c;
-    const OtaUpdater::OtaUpdaterError e = updater.checkForUpdate();
+    const OtaUpdater::OtaUpdaterError e = updater.checkForUpdate(budgetMs);
     if (e == OtaUpdater::OK || e == OtaUpdater::NO_UPDATE) {
       c.decision = updater.getDecision();
     } else {

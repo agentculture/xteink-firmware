@@ -58,7 +58,11 @@ class OtaUpdater {
   // OK when the offer should be installed; NO_UPDATE when there is none, it is
   // the running build, it is deferred, or this device already rolled back from
   // it (getDecision() says which).
-  OtaUpdaterError checkForUpdate();
+  // `deadlineMs` > 0 bounds the whole check, both origins included: no request
+  // starts once it has passed and each one is cut off when it runs out (the
+  // daily routine's cap, the health check's window). 0 = only the per-origin
+  // timeouts.
+  OtaUpdaterError checkForUpdate(uint32_t deadlineMs = 0);
 
   // Takes an offer read from another status response (for example the daily
   // routine's). `fromOrigin` is the origin that sent that response.

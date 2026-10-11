@@ -166,6 +166,7 @@ class DevicePort final : public HealthPort {
   bool sdOk() override { return sd; }
 
   bool postStatus(const uint32_t remaining) override {
+    const uint32_t startMs = ::millis();
     if (WiFi.status() != WL_CONNECTED) {
       if (!storeLoaded) {
         WIFI_STORE.loadFromFile();
@@ -177,9 +178,12 @@ class DevicePort final : public HealthPort {
         return false;
       }
     }
-    // The OTA check is one status POST (LAN first, then the tunnel).
+    // The OTA check is one status POST (LAN first, then the tunnel), bounded by
+    // what the join left of the window.
+    const uint32_t spent = ::millis() - startMs;
+    if (spent >= remaining) return false;
     OtaUpdater updater;
-    const OtaUpdater::OtaUpdaterError e = updater.checkForUpdate();
+    const OtaUpdater::OtaUpdaterError e = updater.checkForUpdate(remaining - spent);
     // Any HTTP answer proves the new image boots and reaches the server (d8): a
     // server error (5xx while it restarts, 401 for a key problem) is not a reason
     // to roll back a good build. Only no answer at all fails the check.

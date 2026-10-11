@@ -86,6 +86,7 @@ class FakePort : public RoutinePort {
   uint32_t syncCostMs = 20000;
   // false: the join overruns its budget (a misbehaving radio).
   bool joinHonorsBudget = true;
+  bool checkHonorsBudget = true;
 
   // State (NVS and radio).
   uint32_t now = 0xFFFFF000u;  // near the 49-day wrap on purpose
@@ -105,6 +106,7 @@ class FakePort : public RoutinePort {
   int sntpCalls = 0;
   int setLastRunCalls = 0;
   uint32_t lastInstallBudget = 0;
+  uint32_t lastCheckBudget = 0;
   uint32_t lastItemBudget = 0;
   uint32_t lastHardBudget = 0;
   uint32_t syncStartedAtElapsed = 0;
@@ -154,11 +156,16 @@ class FakePort : public RoutinePort {
   void setOtaCount(const uint8_t n) override { otaCountValue = n; }
   Note note() override { return savedNote; }
   void setNote(const Note n) override { savedNote = n; }
-  OtaCheck checkOta() override {
+  OtaCheck checkOta(const uint32_t budgetMs) override {
     ++checkCalls;
+    lastCheckBudget = budgetMs;
     events.push_back("check");
-    now += checkCostMs;
-    return ota;
+    if (checkCostMs < budgetMs || !checkHonorsBudget) {
+      now += checkCostMs;
+      return ota;
+    }
+    now += budgetMs;  // the deadline cut the POST off: no answer
+    return {sync::OtaDecision::None, sync::Error::Network};
   }
   sync::Error installOta(const uint32_t budgetMs) override {
     ++installCalls;
@@ -855,6 +862,19 @@ TEST(DailyCap, NoTimeForTheCheckSkipsItAndStillSyncs) {
   EXPECT_EQ(p.checkCalls, 0);
   EXPECT_EQ(r.fields.fwOutcome, "deferred:time");
   EXPECT_EQ(p.syncCalls, 1);
+}
+
+TEST(DailyCap, TheCheckIsBoundedByTheCap) {
+  // A tunnel status POST with no deadline could hold the routine past its cap.
+  FakePort p = dueDevice();
+  p.checkCostMs = 1000000;  // a peer that never answers
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(r.status, Status::Ran);
+  EXPECT_GT(p.lastCheckBudget, 0u);
+  EXPECT_LE(p.lastCheckBudget, kDailyRoutineCapMs - kSyncReserveMs);
+  EXPECT_EQ(r.fields.fwOutcome, "failed:ENET");
+  EXPECT_GE(p.lastHardBudget, kSyncReserveMs - 1000);  // the sync kept its reserve
+  EXPECT_LE(p.now - p.startMs, kDailyRoutineCapMs);
 }
 
 TEST(DailyCap, JoinIsBoundedByItsBudget) {

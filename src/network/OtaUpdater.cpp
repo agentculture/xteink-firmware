@@ -73,12 +73,15 @@ void configureClient(freeink::SecureHttpClient& client, const std::string& auth,
 }
 
 // One status POST. HTTP status, or -1 on a transport failure, an over-long
-// body, a truncated body, or when the whole-call budget ran out.
-int postStatus(const std::string& origin, const std::string& auth, const std::string& body, std::string& response) {
+// body, a truncated body, or when the whole-call budget ran out. `leftMs` > 0
+// is what is left of the caller's deadline and caps this call.
+int postStatus(const std::string& origin, const std::string& auth, const std::string& body, std::string& response,
+               const uint32_t leftMs) {
   auto http = makeUniqueNoThrow<freeink::SecureHttpClient>();
   if (!http) return -1;
   const bool https = xs::isHttps(origin);
-  const uint32_t timeoutMs = https ? kTunnelTimeoutMs : kLanTimeoutMs;
+  uint32_t timeoutMs = https ? kTunnelTimeoutMs : kLanTimeoutMs;
+  if (leftMs > 0) timeoutMs = std::min(timeoutMs, leftMs);
   WifiPowerSaveGuard psGuard;
   if (https) tls_trust::ensureClockForTls();
   if (!http->begin(origin + "/api/device/status")) return -1;
@@ -93,9 +96,11 @@ int postStatus(const std::string& origin, const std::string& auth, const std::st
     response.append(reinterpret_cast<const char*>(data), len);
     return true;
   };
-  // The LAN probe has a whole-call budget so a slow peer cannot hold it (r21).
+  // The LAN probe has a whole-call budget so a slow peer cannot hold it (r21);
+  // a caller deadline bounds either origin.
   const uint32_t startMs = millis();
-  const uint32_t budgetMs = https ? 0 : kLanTimeoutMs;
+  uint32_t budgetMs = https ? 0 : kLanTimeoutMs;
+  if (leftMs > 0) budgetMs = budgetMs == 0 ? leftMs : std::min(budgetMs, leftMs);
   const int status = http->sendRequest("POST", reinterpret_cast<const uint8_t*>(body.data()), body.size(), sink,
                                        [startMs, budgetMs] { return xs::budgetExpired(millis(), startMs, budgetMs); });
   const bool complete = http->responseComplete();
@@ -313,7 +318,8 @@ void OtaUpdater::setOffer(const xs::FirmwareOffer& newOffer, const std::string& 
           offer.present ? offer.version.c_str() : "-", CROSSPOINT_VERSION);
 }
 
-OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
+OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate(const uint32_t deadlineMs) {
+  const uint32_t checkStartMs = millis();
   offer = xs::FirmwareOffer{};
   decision = xs::OtaDecision::None;
   origin.clear();
@@ -333,12 +339,21 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
 
   bool heapSkipped = false;
   for (const std::string& candidate : xs::serverOrder(xteink::config::getLanUrl(), xteink::config::getTunnelUrl())) {
+    uint32_t leftMs = 0;
+    if (deadlineMs > 0) {
+      const uint32_t elapsed = millis() - checkStartMs;
+      if (elapsed >= deadlineMs) {
+        LOG_INF(kTag, "Check deadline reached before %s", candidate.c_str());
+        break;
+      }
+      leftMs = deadlineMs - elapsed;
+    }
     if (!heapOk(xs::isHttps(candidate))) {
       heapSkipped = true;
       continue;
     }
     std::string response;
-    const int status = postStatus(candidate, auth, body, response);
+    const int status = postStatus(candidate, auth, body, response, leftMs);
     if (status < 0) {
       LOG_INF(kTag, "No answer from %s", candidate.c_str());
       continue;

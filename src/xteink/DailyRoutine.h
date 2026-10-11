@@ -209,7 +209,8 @@ class RoutinePort {
   virtual void setNote(Note note) = 0;  // "dr_note"
 
   // OTA (OtaUpdater) and the book sync (XteinkSync::run).
-  virtual OtaCheck checkOta() = 0;
+  // One status POST for the offer, bounded by budgetMs (both origins).
+  virtual OtaCheck checkOta(uint32_t budgetMs) = 0;
   // Installs the checked offer within budgetMs; Error::None = the boot
   // partition now points at the new image.
   virtual sync::Error installOta(uint32_t budgetMs) = 0;

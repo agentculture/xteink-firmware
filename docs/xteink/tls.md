@@ -228,7 +228,11 @@ updated over USB or from the SD card.
 `firmware_version` (`xteink-fw <CROSSPOINT_VERSION>`), so the inventory and
 `last_*` fields the sync stored are kept. It uses the sync's server order: the
 LAN URL (4 s budget), then the tunnel, with the device key and
-`X-Xteink-Protocol: 1`. The response may carry an optional offer:
+`X-Xteink-Protocol: 1`. `checkForUpdate(deadlineMs)` bounds the whole check,
+both origins included: the daily routine passes what is left of its cap above
+the sync's reserve, and the health check passes what is left of its 45 s
+window. The manual **Check for updates** screen passes 0 (per-origin
+timeouts only). The response may carry an optional offer:
 
 ```json
 {"protocol": "1", "device": {"...": "..."},
