@@ -489,7 +489,8 @@ std::vector<std::string> splitLines(const std::string& s) {
 bool rolledBackListContains(const std::string& stored, const std::string& version) {
   if (stripFirmwarePrefix(version).empty()) return false;
   const std::vector<std::string> list = splitLines(stored);
-  return std::any_of(list.begin(), list.end(), [&version](const std::string& v) { return sameFirmwareVersion(v, version); });
+  return std::any_of(list.begin(), list.end(),
+                     [&version](const std::string& v) { return sameFirmwareVersion(v, version); });
 }
 
 std::string rolledBackListAdd(const std::string& stored, const std::string& version) {

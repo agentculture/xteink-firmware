@@ -64,7 +64,7 @@ constexpr uint32_t kSyncReserveMs = 35000;     // kept for the book sync after O
 // that resumes can still finish. With a typical join and check, the cap less
 // kSyncReserveMs leaves about 65 s.
 constexpr uint32_t kOtaMinInstallMs = 60000;
-constexpr uint32_t kSyncTailMs = 10000;        // no new download starts in the last 10 s
+constexpr uint32_t kSyncTailMs = 10000;  // no new download starts in the last 10 s
 
 // Below this the clock was obviously never set (2025-01-01 UTC); the same
 // floor TrustedTime uses.
@@ -205,7 +205,7 @@ class RoutinePort {
   virtual void setOtaDay(int64_t boundary) = 0;
   virtual uint8_t otaCount() = 0;  // "ota_n": install attempts on that day
   virtual void setOtaCount(uint8_t n) = 0;
-  virtual Note note() = 0;               // "dr_note"
+  virtual Note note() = 0;              // "dr_note"
   virtual void setNote(Note note) = 0;  // "dr_note"
 
   // OTA (OtaUpdater) and the book sync (XteinkSync::run).

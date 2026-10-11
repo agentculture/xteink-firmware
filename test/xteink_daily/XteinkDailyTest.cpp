@@ -323,16 +323,36 @@ TEST(DailyBoundary, NeverTouchesTheProcessTimezone) {
 // Every rule the clock settings ship (src/util/Timezones.cpp), plus forms the
 // C library accepts that the table does not use.
 const char* const kShippedZones[] = {
-    "ACST-9:30ACDT,M10.1.0,M4.1.0/3", "AEST-10AEDT,M10.1.0,M4.1.0/3", "AKST9AKDT,M3.2.0,M11.1.0",
-    "AST4ADT,M3.2.0,M11.1.0",         "AZOT1AZOST,M3.5.0/0,M10.5.0/1", "CET-1CEST,M3.5.0,M10.5.0/3",
-    "CLT4CLST,M9.1.6/24,M4.1.6/24",   "CST6CDT,M3.2.0,M11.1.0",        "EET-2EEST,M3.5.0/3,M10.5.0/4",
-    "EET-2EEST,M4.5.5/0,M10.5.4/24",  "EST5EDT,M3.2.0,M11.1.0",        "GMT0BST,M3.5.0/1,M10.5.0",
-    "IST-2IDT,M3.4.4/26,M10.5.0",     "MST7MDT,M3.2.0,M11.1.0",        "NST3:30NDT,M3.2.0,M11.1.0",
-    "NZST-12NZDT,M9.5.0,M4.1.0/3",    "PST8PDT,M3.2.0,M11.1.0",        "ACST-9:30",
-    "AFT-4:30",                       "IST-5:30",                      "NPT-5:45",
-    "LINT-14",                        "HST10",                         "UTC0",
-    "UTC+05:30",                      "UTC-05:45",                     "UTC-0:30",
-    "<+03>-3",                        "EST5EDT",                       "XST-1XDT-3,J60/1,300/-1",
+    "ACST-9:30ACDT,M10.1.0,M4.1.0/3",
+    "AEST-10AEDT,M10.1.0,M4.1.0/3",
+    "AKST9AKDT,M3.2.0,M11.1.0",
+    "AST4ADT,M3.2.0,M11.1.0",
+    "AZOT1AZOST,M3.5.0/0,M10.5.0/1",
+    "CET-1CEST,M3.5.0,M10.5.0/3",
+    "CLT4CLST,M9.1.6/24,M4.1.6/24",
+    "CST6CDT,M3.2.0,M11.1.0",
+    "EET-2EEST,M3.5.0/3,M10.5.0/4",
+    "EET-2EEST,M4.5.5/0,M10.5.4/24",
+    "EST5EDT,M3.2.0,M11.1.0",
+    "GMT0BST,M3.5.0/1,M10.5.0",
+    "IST-2IDT,M3.4.4/26,M10.5.0",
+    "MST7MDT,M3.2.0,M11.1.0",
+    "NST3:30NDT,M3.2.0,M11.1.0",
+    "NZST-12NZDT,M9.5.0,M4.1.0/3",
+    "PST8PDT,M3.2.0,M11.1.0",
+    "ACST-9:30",
+    "AFT-4:30",
+    "IST-5:30",
+    "NPT-5:45",
+    "LINT-14",
+    "HST10",
+    "UTC0",
+    "UTC+05:30",
+    "UTC-05:45",
+    "UTC-0:30",
+    "<+03>-3",
+    "EST5EDT",
+    "XST-1XDT-3,J60/1,300/-1",
 };
 
 int32_t libcOffset(const char* tz, const int64_t epoch) {
@@ -397,8 +417,8 @@ TEST(DailyBoundary, BoundaryMatchesTheCLibraryForEveryShippedZone) {
 
 TEST(DailyBoundary, RulesThatDoNotParseAreRejected) {
   int32_t off = 0;
-  for (const char* tz : {"", "X", "IST-2IDT,M3.4.4", "IST-2IDT,M13.1.0,M10.5.0", "IST-99", "CET-1CEST,M3.5.0,M10.5.0/3x",
-                         "<+03-3"}) {
+  for (const char* tz :
+       {"", "X", "IST-2IDT,M3.4.4", "IST-2IDT,M13.1.0,M10.5.0", "IST-99", "CET-1CEST,M3.5.0,M10.5.0/3x", "<+03-3"}) {
     EXPECT_FALSE(utcOffsetAt(tz, utc(2026, 6, 1), off)) << tz;
     EXPECT_EQ(mostRecentBoundary(utc(2026, 6, 1), tz), -1) << tz;
   }
@@ -916,9 +936,8 @@ TEST(DailyFormat, ContentOutcome) {
 }
 
 TEST(DailyFormat, FwOutcomeStringsMatchTheServerPattern) {
-  for (const char* s :
-       {kFwNone, kFwInstalled, kFwDeferredTunnel, kFwDeferredBattery, kFwDeferredDailyCap, kFwDeferredTime,
-        kFwDeferredRolledBack, sync::otaDecisionName(sync::OtaDecision::RolledBack)}) {
+  for (const char* s : {kFwNone, kFwInstalled, kFwDeferredTunnel, kFwDeferredBattery, kFwDeferredDailyCap,
+                        kFwDeferredTime, kFwDeferredRolledBack, sync::otaDecisionName(sync::OtaDecision::RolledBack)}) {
     EXPECT_TRUE(fwOutcomeValid(s)) << s;
   }
   for (const auto e : {sync::Error::Network, sync::Error::Download, sync::Error::Hash, sync::Error::Flash,

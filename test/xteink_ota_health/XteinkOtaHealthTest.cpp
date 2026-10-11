@@ -81,7 +81,9 @@ class FakePort : public HealthPort {
     events.push_back("cand-clear");
   }
   void setRolledBack(const std::string& v) override { rolledBack = v; }
-  void rememberRolledBack(const std::string& v) override { rolledBackList = xteink::sync::rolledBackListAdd(rolledBackList, v); }
+  void rememberRolledBack(const std::string& v) override {
+    rolledBackList = xteink::sync::rolledBackListAdd(rolledBackList, v);
+  }
 };
 
 // --- decideHealth ---------------------------------------------------------

@@ -550,12 +550,12 @@ Result run(RoutinePort& port, const Trigger trigger) { return Routine(port, trig
 #include <atomic>
 
 #include "CrossPointSettings.h"
+#include "OtaHealth.h"
 #include "WifiCredentialStore.h"
 #include "WifiJoin.h"
 #include "XteinkConfig.h"
 #include "activities/Activity.h"  // RenderLock
 #include "components/UITheme.h"
-#include "OtaHealth.h"
 #include "network/OtaUpdater.h"
 #include "util/Timezones.h"
 
