@@ -23,6 +23,9 @@ jobs:
         run: python3 scripts/xteink-check-services.py
       - name: Pinned CA bundle
         run: python3 test/test_xteink_ca_bundle.py
+      - name: Flash layout and SDK pointer pins
+        # partitions.csv byte-identical to feat/issue-1, freeink-sdk gitlink pinned.
+        run: python3 scripts/xteink-check-footprint.py
 
   build:
     name: Xteink build ${{ matrix.env }}
@@ -91,6 +94,11 @@ jobs:
         run: |
           set -euo pipefail
           pio run -e ${{ matrix.env }} | tee pio.log
+
+      - name: Image fits the OTA slot with headroom
+        # Only the C3 X3/X4 image is gated: it must fit app0 (0x640000) with >= 5% free.
+        if: matrix.env == 'default'
+        run: python3 scripts/xteink-check-footprint.py --only image --image .pio/build/default/firmware.bin
 
       - name: Extract firmware stats
         run: |
