@@ -11,6 +11,21 @@
 #include "fontIds.h"
 #include "network/OtaUpdater.h"
 
+// Detail line under "Update failed" for the outcomes that have their own wording.
+// Plain literals (static storage): the xteink-only strings are not in the i18n table.
+const char* OtaUpdateActivity::failureDetail(const int res) {
+  switch (res) {
+    case OtaUpdater::WRONG_DEVICE_ERROR:
+      return tr(STR_FIRMWARE_WRONG_DEVICE);
+    case OtaUpdater::NOT_PROVISIONED:
+      return "Device not provisioned";
+    case OtaUpdater::HASH_ERROR:
+      return "Download corrupted, nothing installed";
+    default:
+      return nullptr;
+  }
+}
+
 void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
   if (!success) {
     LOG_ERR("OTA", "WiFi connection failed, exiting");
@@ -27,12 +42,24 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
   requestUpdateAndWait();
 
   const auto res = updater.checkForUpdate();
-  // NO_UPDATE here means the release carries no firmware asset for this board
-  // (expected until per-board assets are published) — not a failure.
+  // NO_UPDATE means the server made no installable offer: none at all, the offer
+  // is the running build, or it is only reachable over the tunnel (deferred).
+  // None of these is a failure; getDecision() says which message to show.
   if (res == OtaUpdater::NO_UPDATE) {
-    LOG_DBG("OTA", "No firmware asset for this board in latest release");
+    LOG_DBG("OTA", "No installable offer: %s", xteink::sync::otaDecisionName(updater.getDecision()));
     {
       RenderLock lock(*this);
+      switch (updater.getDecision()) {
+        case xteink::sync::OtaDecision::Current:
+          noUpdateText = "Already up to date";
+          break;
+        case xteink::sync::OtaDecision::Deferred:
+          noUpdateText = "Update available on home Wi-Fi only";
+          break;
+        default:
+          noUpdateText = "No update offered";
+          break;
+      }
       state = NO_UPDATE;
     }
     return;
@@ -41,6 +68,7 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
     LOG_DBG("OTA", "Update check failed: %d", res);
     {
       RenderLock lock(*this);
+      failedDetail = failureDetail(res);
       state = FAILED;
     }
     return;
@@ -50,6 +78,7 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
     LOG_DBG("OTA", "No new update available");
     {
       RenderLock lock(*this);
+      noUpdateText = "No update offered";
       state = NO_UPDATE;
     }
     return;
@@ -150,7 +179,7 @@ void OtaUpdateActivity::render(RenderLock&&) {
         UI_10_FONT_ID, y,
         (std::to_string(updater.getProcessedSize()) + " / " + std::to_string(updater.getTotalSize())).c_str());
   } else if (state == NO_UPDATE) {
-    renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_NO_UPDATE), true, EpdFontFamily::BOLD);
+    renderer.drawCenteredText(UI_10_FONT_ID, top, noUpdateText, true, EpdFontFamily::BOLD);
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else if (state == FAILED) {
@@ -192,7 +221,7 @@ void OtaUpdateActivity::runUpdateInstall() {
     LOG_DBG("OTA", "Update failed: %d", res);
     {
       RenderLock lock(*this);
-      failedDetail = res == OtaUpdater::WRONG_DEVICE_ERROR ? tr(STR_FIRMWARE_WRONG_DEVICE) : nullptr;
+      failedDetail = failureDetail(res);
       state = FAILED;
     }
     requestUpdate();
