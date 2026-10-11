@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 #include "xteink/SyncProtocol.h"
@@ -75,5 +76,7 @@ class OtaUpdater {
 
   // Streams the offered image into the inactive slot and switches the boot
   // partition only when the size and sha256 match. Does not reboot.
-  OtaUpdaterError installUpdate(ProgressCallback onProgress = nullptr, void* ctx = nullptr);
+  // `budgetMs` > 0 aborts the transfer once that long has passed (the daily
+  // routine's wall-clock cap); the slot is then discarded (Error::Cancelled).
+  OtaUpdaterError installUpdate(ProgressCallback onProgress = nullptr, void* ctx = nullptr, uint32_t budgetMs = 0);
 };

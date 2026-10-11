@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "CrossPointSettings.h"
+#include "DailyRoutine.h"
 #include "FreeSpaceCache.h"
 #include "OtaHealth.h"
 #include "XteinkConfig.h"
@@ -529,7 +530,7 @@ int64_t reportFreeBytes(const int64_t pendingBytes, bool& measured) {
 
 }  // namespace
 
-Outcome run(const GfxRenderer* renderer, const Callbacks& cb, const uint32_t itemBudgetMs) {
+Outcome run(const GfxRenderer* renderer, const Callbacks& cb, const uint32_t itemBudgetMs, const RunFields* runFields) {
   Outcome out;
   const uint32_t started = millis();
   const std::string key = config::getDeviceKey();
@@ -595,6 +596,10 @@ Outcome run(const GfxRenderer* renderer, const Callbacks& cb, const uint32_t ite
   }
   report.inventory = inventoryOf(manifest, modified);
   report.rolledBackVersion = otahealth::rolledBackVersion();
+  if (runFields) {
+    report.run = *runFields;
+    report.run.contentOutcome.clear();  // known only once the sync is done
+  }
 
   // 2. Server order (c60): the first origin that answers the status report is
   // used for the rest of the sync.
@@ -808,6 +813,7 @@ Outcome run(const GfxRenderer* renderer, const Callbacks& cb, const uint32_t ite
     report.lastSyncResult = out.error == Error::None ? "ok" : "error";
     report.lastError = lastError.empty() && out.error != Error::None ? errorCode(out.error) : lastError;
     report.inventory = inventoryOf(manifest, modified);
+    if (runFields) report.run.contentOutcome = daily::contentOutcome(out);
     if (canGrow(report.inventory.size() * 100 + 256)) {
       const std::string body = buildStatusJson(report);
       status = session->call("POST", "/api/device/status", &body, nullptr, 0);
@@ -819,6 +825,7 @@ Outcome run(const GfxRenderer* renderer, const Callbacks& cb, const uint32_t ite
   LOG_INF(kTag, "Sync done: %s, %u new, %u deleted, %u skipped, %u failed", errorCode(out.error), out.delivered,
           out.deleted, out.skipped, out.failed);
   persistResult(out);
+  if (out.error == Error::None) daily::onSyncSucceeded();
   return out;
 }
 
@@ -841,11 +848,24 @@ void setJoinHookSuppressed(const bool suppressed) { joinHookSuppressed = suppres
 bool statusLine(char* buf, const size_t len) {
   const StatusTemplates t{tr(STR_XTEINK_SYNCED_TIME_NEW), tr(STR_XTEINK_SYNCED_NEW), tr(STR_XTEINK_SYNCED_TIME),
                           tr(STR_XTEINK_SYNCED), tr(STR_XTEINK_SYNC_ERROR)};
-  return formatStatusLine(previousResult(), t, buf, len);
+  char syncLine[64];
+  const bool hasSync = formatStatusLine(previousResult(), t, syncLine, sizeof(syncLine));
+  const char* note = nullptr;
+  switch (daily::homeNote()) {
+    case daily::Note::FirmwarePending:
+      note = tr(STR_XTEINK_FW_PENDING);
+      break;
+    case daily::Note::LowBattery:
+      note = tr(STR_XTEINK_DAILY_LOW_BATTERY);
+      break;
+    case daily::Note::None:
+      break;
+  }
+  return daily::composeStatusLine(hasSync ? syncLine : nullptr, note, buf, len);
 }
 
 void drawHomeStatusLine(const GfxRenderer& renderer, const int contentBottom) {
-  char line[64];
+  char line[96];
   if (!statusLine(line, sizeof(line))) return;
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int y = renderer.getScreenHeight() - metrics.buttonHintsHeight - renderer.getLineHeight(SMALL_FONT_ID) - 6;
