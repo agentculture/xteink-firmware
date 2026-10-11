@@ -315,5 +315,11 @@ codes: `ESHA` (sha256 mismatch), `EDL` (truncated or oversized), `ENET`,
 `EFLASH` (an `esp_ota_*` call failed).
 
 Upstream release envs set `CROSSPOINT_VERSION` to `[crosspoint] version` from
-`platformio.ini`, so every `gh_release` build reports the same version. Dev
-builds get `<version>-dev-<branch>-<sha>` from `scripts/git_branch.py`.
+`platformio.ini`, so every `gh_release` build reports the same version. The
+fork's release env, `xteink_release`, has the same flags but gets
+`<version>+xteink.<8-char sha>` (for example `1.6.5+xteink.9a1b2c3d`) from
+`scripts/xteink_release_version.py`, so every release build has its own
+version. Build release images for the xteink server with
+`pio run -e xteink_release`. Xteink CI builds it, checks its slot headroom
+and checks that the image carries `xteink-fw <that version>`. Dev builds get
+`<version>-dev-<branch>-<sha>` from `scripts/git_branch.py`.
