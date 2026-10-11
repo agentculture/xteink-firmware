@@ -310,6 +310,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   decision = xs::OtaDecision::None;
   origin.clear();
   lastError = xs::Error::None;
+  serverAnswered = false;
 
   const std::string key = xteink::config::getDeviceKey();
   if (key.empty()) {
@@ -334,6 +335,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
       LOG_INF(kTag, "No answer from %s", candidate.c_str());
       continue;
     }
+    serverAnswered = true;
     lastError = xs::errorForStatus(status);
     if (lastError != xs::Error::None) {
       LOG_ERR(kTag, "Status from %s: %d (%s)", candidate.c_str(), status, xs::errorCode(lastError));

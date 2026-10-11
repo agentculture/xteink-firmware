@@ -6,7 +6,8 @@
 // On the first boot of an image the bootloader left PENDING_VERIFY, setup()
 // calls onBoot() once the display and SD card are up. The new image is kept
 // only when the display initialised, the SD card mounted, and one POST
-// /api/device/status succeeded within kHealthServerWindowMs. Otherwise it is
+// /api/device/status got any HTTP answer (even an error status) within
+// kHealthServerWindowMs. Otherwise it is
 // marked invalid and the device reboots into the previous image, which then
 // reports `rolled_back_version` on its next status POST.
 //
@@ -33,7 +34,7 @@ enum class Reason : uint8_t {
   None,     // all checks passed
   Display,  // display init failed
   SdCard,   // SD card did not mount
-  Server,   // no successful status POST within the window
+  Server,   // no HTTP answer to a status POST within the window
 };
 
 struct Decision {
@@ -53,7 +54,8 @@ class HealthPort {
   virtual bool displayOk() = 0;
   virtual bool sdOk() = 0;
   // One status POST attempt (joining Wi-Fi first when needed), bounded by the
-  // port to roughly `remainingMs`. True on a 2xx answer.
+  // port to roughly `remainingMs`. True when the server gave any HTTP answer
+  // (2xx, 4xx or 5xx); false only when no server answered.
   virtual bool postStatus(uint32_t remainingMs) = 0;
   virtual uint32_t millis() = 0;
   virtual void sleepMs(uint32_t ms) = 0;
@@ -75,7 +77,7 @@ class HealthPort {
 };
 
 // The verdict. Display or SD failure selects Rollback without touching the
-// network. Otherwise status POSTs are attempted until one succeeds (Valid) or
+// network. Otherwise status POSTs are attempted until a server answers (Valid) or
 // windowMs has run out (Rollback, Reason::Server); retryDelayMs separates
 // attempts.
 Decision decideHealth(HealthPort& port, uint32_t windowMs, uint32_t retryDelayMs);
