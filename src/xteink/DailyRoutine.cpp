@@ -555,6 +555,7 @@ Result run(RoutinePort& port, const Trigger trigger) { return Routine(port, trig
 #include "XteinkConfig.h"
 #include "activities/Activity.h"  // RenderLock
 #include "components/UITheme.h"
+#include "OtaHealth.h"
 #include "network/OtaUpdater.h"
 #include "util/Timezones.h"
 
@@ -602,6 +603,13 @@ void nvsWrite(const char* key, Setter set) {
   if (err == ESP_OK) err = nvs_commit(h);
   nvs_close(h);
   if (err != ESP_OK) LOG_ERR(kTag, "NVS write %s failed: %d", key, static_cast<int>(err));
+}
+
+void releaseWifi() {
+  if (WiFi.getMode() != WIFI_MODE_NULL) {
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+  }
 }
 
 struct CancelCtx {
@@ -664,12 +672,7 @@ class DevicePort final : public RoutinePort {
     trustedtime::startSync();  // snap the clock floor while the network is up
     return true;
   }
-  void wifiOff() override {
-    if (WiFi.getMode() != WIFI_MODE_NULL) {
-      WiFi.disconnect(true);
-      WiFi.mode(WIFI_OFF);
-    }
-  }
+  void wifiOff() override { releaseWifi(); }
 
   int64_t lastRun() override { return nvsGetI64(kNvsLastRun); }
   void setLastRun(const int64_t epoch) override {
@@ -693,6 +696,16 @@ class DevicePort final : public RoutinePort {
 
   OtaCheck checkOta(const uint32_t budgetMs) override {
     OtaCheck c;
+    // Right after a passed post-update health check, its status POST already
+    // carried this boot's offer: no second POST.
+    sync::FirmwareOffer checked;
+    std::string origin;
+    if (otahealth::takeCheckedOffer(checked, origin)) {
+      LOG_INF(kTag, "Using the health check's offer");
+      updater.setOffer(checked, origin);
+      c.decision = updater.getDecision();
+      return c;
+    }
     const OtaUpdater::OtaUpdaterError e = updater.checkForUpdate(budgetMs);
     if (e == OtaUpdater::OK || e == OtaUpdater::NO_UPDATE) {
       c.decision = updater.getDecision();
@@ -751,10 +764,14 @@ class DevicePort final : public RoutinePort {
 
 void onBoot(GfxRenderer& renderer, const BootKind kind, const bool silentReboot, const bool panicReboot,
             const bool recoveryMode, const bool deepSleepWake, const int64_t bootClockEpoch) {
-  if (!bootQualifies(kind, silentReboot, panicReboot, recoveryMode)) return;
+  if (!bootQualifies(kind, silentReboot, panicReboot, recoveryMode)) {
+    releaseWifi();  // a passed health check may have left the station up
+    return;
+  }
   DevicePort port(renderer, bootClockEpoch);
   const uint32_t startMs = millis();
   const Result r = run(port, deepSleepWake ? Trigger::Wake : Trigger::PowerOn);
+  releaseWifi();  // NotDue and the early skips never owned the radio
   LOG_INF(kTag, "Daily routine: %s (clock %s, fw %s, content %s, %lu ms)", statusName(r.status),
           clockSourceName(r.clock), r.fields.fwOutcome.empty() ? "-" : r.fields.fwOutcome.c_str(),
           r.fields.contentOutcome.empty() ? "-" : r.fields.contentOutcome.c_str(),

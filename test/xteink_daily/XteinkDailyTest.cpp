@@ -761,6 +761,21 @@ TEST(DailyOta, InstallRebootsWithoutLastRunThenReportsInstalled) {
   EXPECT_EQ(run(p, Trigger::PowerOn).status, Status::NotDue);
 }
 
+TEST(DailyOta, AStationLeftUpByThePassedHealthCheckIsReusedThenReleased) {
+  // The new image's health check joined Wi-Fi and kept it up for the routine:
+  // no second join, and the routine still turns the radio off at the end.
+  FakePort p = dueDevice();
+  p.connected = true;
+  p.otaCountValue = 1;
+  p.otaDayValue = mostRecentBoundary(p.systemClock, kJerusalem);
+  p.ota = {sync::OtaDecision::Current, sync::Error::None};
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(r.status, Status::Ran);
+  EXPECT_EQ(r.fields.fwOutcome, "installed");
+  EXPECT_EQ(p.joinCalls, 0);
+  EXPECT_FALSE(p.connected);
+}
+
 TEST(DailyOta, AnOfferThatKeepsComingBackCannotLoop) {
   FakePort p = dueDevice();
   p.ota = {sync::OtaDecision::Install, sync::Error::None};

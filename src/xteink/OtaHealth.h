@@ -17,6 +17,8 @@
 #include <cstdint>
 #include <string>
 
+#include "SyncProtocol.h"
+
 namespace xteink::otahealth {
 
 // Budget for reaching the server: Wi-Fi join plus status POST attempts. No new
@@ -105,8 +107,16 @@ BootOutcome runOnBoot(HealthPort& port, uint32_t windowMs = kHealthServerWindowM
 
 #ifdef ARDUINO
 // Device entry from setup(): runs runOnBoot() with the ESP-IDF port. displayOk
-// and sdOk are setup()'s own init results.
-void onBoot(bool displayOk, bool sdOk);
+// and sdOk are setup()'s own init results. `routineFollows`: the daily routine
+// runs next in this setup() and releases the radio itself, so a passed check
+// leaves Wi-Fi up for it instead of tearing it down and rejoining.
+void onBoot(bool displayOk, bool sdOk, bool routineFollows = false);
+
+// The offer the passed health check's status POST returned on this boot, at
+// most once (the daily routine uses it instead of a second status POST). False
+// when there is none: no check ran, the server answered with an error, or it
+// was already taken.
+bool takeCheckedOffer(sync::FirmwareOffer& offer, std::string& origin);
 
 // rolled_back_version for the next status POST ("" when none).
 std::string rolledBackVersion();

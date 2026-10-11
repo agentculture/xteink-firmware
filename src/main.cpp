@@ -649,7 +649,8 @@ void setup() {
   }
 
   // xteink: first boot after an OTA keeps the image only if it reaches the server (OtaHealth.h).
-  xteink::otahealth::onBoot(display.getFrameBuffer() != nullptr, /*sdOk=*/true);
+  // The daily routine below releases the radio, so a passed check leaves it up for it.
+  xteink::otahealth::onBoot(display.getFrameBuffer() != nullptr, /*sdOk=*/true, /*routineFollows=*/true);
 
   // xteink: once-a-day start routine (battery, Wi-Fi, OTA, book sync) before
   // Home or a resumed book opens. Power-button and plain boots only; bounded

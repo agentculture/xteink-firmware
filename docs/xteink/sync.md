@@ -158,7 +158,13 @@ The manual path also reboots onto a fresh heap first.
 before Home or a resumed book opens. It runs only on power-button and plain
 boots: never after USB power, a flash, a silent heap-defrag reboot, a panic
 reboot, or in recovery mode. It never waits for a button. Progress shows as a
-non-blocking popup.
+non-blocking popup. The routine's only caller is `setup()`, before activity
+routing, so no book is ever open while it runs.
+
+On the first boot of a new image, a passed health check leaves Wi-Fi up and
+hands its status answer to the routine: the routine skips its own join and
+firmware status POST and uses that offer. `daily::onBoot()` turns the radio
+off when it returns, whether or not the routine ran.
 
 1. **Clock.** The clock is checked on every start. The system clock as it came
    up (before TrustedTime restored its floor) is trusted when it is plausible:

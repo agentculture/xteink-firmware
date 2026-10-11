@@ -70,6 +70,8 @@ class OtaUpdater {
 
   xteink::sync::OtaDecision getDecision() const { return decision; }
   const xteink::sync::FirmwareOffer& getOffer() const { return offer; }
+  // Origin whose status response carried the offer ("" before a check).
+  const std::string& getOrigin() const { return origin; }
   // Error of the last check or install (Error::None on success). errorCode()
   // turns it into the E-code for the status report's last_error.
   xteink::sync::Error getLastError() const { return lastError; }

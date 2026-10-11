@@ -2,8 +2,6 @@
 
 #include <algorithm>
 
-#include "SyncProtocol.h"
-
 namespace xteink::otahealth {
 
 const char* reasonName(const Reason r) {
@@ -124,6 +122,14 @@ constexpr size_t kMaxVersionLen = 96;
 // rb_list: kMaxRolledBackBuilds report-form versions, newline-separated.
 constexpr size_t kMaxListLen = sync::kMaxRolledBackBuilds * (sync::kMaxFirmwareVersionLen + 11);
 
+// The offer from this boot's passed health check (takeCheckedOffer()).
+struct CheckedOffer {
+  bool valid = false;
+  sync::FirmwareOffer offer;
+  std::string origin;
+};
+CheckedOffer checkedOffer;
+
 std::string nvsGet(const char* key, const size_t maxLen = kMaxVersionLen) {
   nvs_handle_t h;
   if (nvs_open(kNvsNamespace, NVS_READONLY, &h) != ESP_OK) return "";
@@ -191,6 +197,10 @@ class DevicePort final : public HealthPort {
     if (e != OtaUpdater::OK && e != OtaUpdater::NO_UPDATE) {
       LOG_ERR(kTag, "Status POST %s: %s", answered ? "answered with an error" : "failed",
               sync::errorCode(updater.getLastError()));
+    } else {
+      checkedOffer.valid = true;
+      checkedOffer.offer = updater.getOffer();
+      checkedOffer.origin = updater.getOrigin();
     }
     return answered;
   }
@@ -229,7 +239,7 @@ class DevicePort final : public HealthPort {
 
 }  // namespace
 
-void onBoot(const bool displayOk, const bool sdOk) {
+void onBoot(const bool displayOk, const bool sdOk, const bool routineFollows) {
   DevicePort port(displayOk, sdOk);
   const uint32_t startMs = millis();
   Decision d;
@@ -239,10 +249,21 @@ void onBoot(const bool displayOk, const bool sdOk) {
   LOG_INF(kTag, "Health check of %s: %s (%s, %u attempts, %lu ms)", kFirmwareVersion,
           outcome == BootOutcome::Valid ? "valid" : "rollback failed", reasonName(d.reason),
           static_cast<unsigned>(d.attempts), static_cast<unsigned long>(millis() - startMs));
+  // The daily routine runs next and reuses the joined station (and the offer).
+  if (routineFollows) return;
+  checkedOffer = CheckedOffer{};
   if (WiFi.getMode() != WIFI_MODE_NULL) {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
   }
+}
+
+bool takeCheckedOffer(sync::FirmwareOffer& offer, std::string& origin) {
+  if (!checkedOffer.valid) return false;
+  offer = checkedOffer.offer;
+  origin = checkedOffer.origin;
+  checkedOffer = CheckedOffer{};
+  return true;
 }
 
 std::string rolledBackVersion() { return nvsGet(kNvsRolledBack); }
