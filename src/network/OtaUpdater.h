@@ -24,6 +24,7 @@ class OtaUpdater {
   xteink::sync::FirmwareOffer offer;
   xteink::sync::OtaDecision decision = xteink::sync::OtaDecision::None;
   xteink::sync::Error lastError = xteink::sync::Error::None;
+  bool serverAnswered = false;
   std::string origin;  // origin whose status response carried the offer
   size_t processedSize = 0;
   size_t totalSize = 0;
@@ -67,6 +68,8 @@ class OtaUpdater {
   // Error of the last check or install (Error::None on success). errorCode()
   // turns it into the E-code for the status report's last_error.
   xteink::sync::Error getLastError() const { return lastError; }
+  // True when the last checkForUpdate() got any HTTP status (even an error) from a server.
+  bool getServerAnswered() const { return serverAnswered; }
 
   // True when the offer should be installed. The offer decides, not version
   // ordering: an older build or another -dev build installs too. Kept under

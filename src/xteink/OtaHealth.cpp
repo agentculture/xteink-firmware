@@ -168,9 +168,15 @@ class DevicePort final : public HealthPort {
     // The OTA check is one status POST (LAN first, then the tunnel).
     OtaUpdater updater;
     const OtaUpdater::OtaUpdaterError e = updater.checkForUpdate();
-    const bool ok = e == OtaUpdater::OK || e == OtaUpdater::NO_UPDATE;
-    if (!ok) LOG_ERR(kTag, "Status POST failed: %s", sync::errorCode(updater.getLastError()));
-    return ok;
+    // Any HTTP answer proves the new image boots and reaches the server (d8): a
+    // server error (5xx while it restarts, 401 for a key problem) is not a reason
+    // to roll back a good build. Only no answer at all fails the check.
+    const bool answered = updater.getServerAnswered();
+    if (e != OtaUpdater::OK && e != OtaUpdater::NO_UPDATE) {
+      LOG_ERR(kTag, "Status POST %s: %s", answered ? "answered with an error" : "failed",
+              sync::errorCode(updater.getLastError()));
+    }
+    return answered;
   }
 
   uint32_t millis() override { return ::millis(); }
