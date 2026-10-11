@@ -23,54 +23,209 @@ const char* routineTimezone(const bool timezoneChosen, const char* clockTz) {
 
 namespace {
 
-// Applies a POSIX TZ rule for the lifetime of the object and restores the
-// previous one (or its absence) afterwards.
-class ScopedTz {
- public:
-  explicit ScopedTz(const char* tz) {
-    const char* old = getenv("TZ");
-    hadOld = old != nullptr;
-    if (hadOld) snprintf(oldTz, sizeof(oldTz), "%s", old);
-    setenv("TZ", tz, 1);
-    tzset();
-  }
-  ~ScopedTz() {
-    if (hadOld) {
-      setenv("TZ", oldTz, 1);
-    } else {
-      unsetenv("TZ");
-    }
-    tzset();
-  }
-  ScopedTz(const ScopedTz&) = delete;
-  ScopedTz& operator=(const ScopedTz&) = delete;
+// --- POSIX TZ rules without the C library ------------------------------------
+// The C library's TZ machinery works on the process-wide TZ variable. Setting it
+// here (setenv/tzset) would race the render task, which formats the clock
+// under that variable, so the rule is evaluated by hand instead.
 
- private:
-  bool hadOld = false;
-  char oldTz[64] = "";
+constexpr int64_t kDaySecs = 86400;
+
+int64_t floorDiv(const int64_t a, const int64_t b) { return a / b - ((a % b != 0) && ((a < 0) != (b < 0))); }
+
+bool isLeap(const int64_t y) { return (y % 4 == 0 && y % 100 != 0) || y % 400 == 0; }
+
+// Days since 1970-01-01 of a proleptic Gregorian date (Hinnant's days_from_civil).
+int64_t daysFromCivil(int64_t y, const int m, const int d) {
+  y -= m <= 2;
+  const int64_t era = floorDiv(y, 400);
+  const int64_t yoe = y - era * 400;
+  const int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  const int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + doe - 719468;
+}
+
+// Year of a day count (inverse of daysFromCivil, year only).
+int64_t yearOfDays(const int64_t days) {
+  const int64_t z = days + 719468;
+  const int64_t era = floorDiv(z, 146097);
+  const int64_t doe = z - era * 146097;
+  const int64_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  const int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  const int64_t mp = (5 * doy + 2) / 153;
+  const int64_t m = mp < 10 ? mp + 3 : mp - 9;
+  return yoe + era * 400 + (m <= 2);
+}
+
+int monthDays(const int64_t y, const int m) {
+  static constexpr int kDays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  return m == 2 && isLeap(y) ? 29 : kDays[m - 1];
+}
+
+struct TzDate {
+  char kind = 'M';  // 'M' (Mm.w.d), 'J' (Jn, no Feb 29) or 'N' (n, zero-based)
+  int month = 0, week = 0, weekday = 0, day = 0;
+  int32_t timeSecs = 7200;  // local time of the change, default 02:00
 };
 
-// Local `hour`:00:00 on the calendar day of `t`, `dayOffset` days later, or -1.
-int64_t localHourOn(const time_t t, const int dayOffset, const int hour) {
-  struct tm tm{};
-  if (localtime_r(&t, &tm) == nullptr) return -1;
-  tm.tm_mday += dayOffset;
-  tm.tm_hour = hour;
-  tm.tm_min = 0;
-  tm.tm_sec = 0;
-  tm.tm_isdst = -1;  // let the rule decide (06:00 exists exactly once on every DST day)
-  const time_t b = mktime(&tm);
-  return b == static_cast<time_t>(-1) ? -1 : static_cast<int64_t>(b);
+struct TzRule {
+  int32_t stdOffset = 0;  // seconds east of UTC (POSIX offsets are west)
+  bool hasDst = false;
+  int32_t dstOffset = 0;
+  TzDate start, end;
+};
+
+class TzParser {
+ public:
+  explicit TzParser(const char* s) : p(s) {}
+
+  bool parse(TzRule& out) {
+    int32_t off = 0;
+    if (!name() || !offset(off, false)) return false;
+    out.stdOffset = -off;
+    if (*p == '\0') return true;
+    if (!name()) return false;
+    out.hasDst = true;
+    out.dstOffset = out.stdOffset + 3600;
+    if (*p != ',' && *p != '\0') {
+      if (!offset(off, false)) return false;
+      out.dstOffset = -off;
+    }
+    if (*p == '\0') {
+      // No rule: the US rule, as the C library assumes.
+      out.start = TzDate{'M', 3, 2, 0, 0, 7200};
+      out.end = TzDate{'M', 11, 1, 0, 0, 7200};
+      return true;
+    }
+    if (*p++ != ',' || !date(out.start) || *p++ != ',' || !date(out.end)) return false;
+    return *p == '\0';
+  }
+
+ private:
+  const char* p;
+
+  static bool isAlpha(const char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); }
+  static bool isDigit(const char c) { return c >= '0' && c <= '9'; }
+
+  bool name() {
+    if (*p == '<') {
+      ++p;
+      while (*p != '\0' && *p != '>') ++p;
+      if (*p != '>') return false;
+      ++p;
+      return true;
+    }
+    const char* begin = p;
+    while (isAlpha(*p)) ++p;
+    return p - begin >= 3;
+  }
+
+  bool number(int& v, const int maxDigits) {
+    if (!isDigit(*p)) return false;
+    v = 0;
+    for (int n = 0; n < maxDigits && isDigit(*p); ++n) v = v * 10 + (*p++ - '0');
+    return true;
+  }
+
+  // [+|-]hh[:mm[:ss]] in seconds. `wide` allows the -167..167 hours of a rule time.
+  bool offset(int32_t& out, const bool wide) {
+    int sign = 1;
+    if (*p == '+' || *p == '-') sign = *p++ == '-' ? -1 : 1;
+    int h = 0, m = 0, sec = 0;
+    if (!number(h, 3) || h > (wide ? 167 : 24)) return false;
+    if (*p == ':') {
+      ++p;
+      if (!number(m, 2) || m > 59) return false;
+      if (*p == ':') {
+        ++p;
+        if (!number(sec, 2) || sec > 59) return false;
+      }
+    }
+    out = sign * (h * 3600 + m * 60 + sec);
+    return true;
+  }
+
+  bool date(TzDate& d) {
+    if (*p == 'M') {
+      ++p;
+      d.kind = 'M';
+      if (!number(d.month, 2) || d.month < 1 || d.month > 12 || *p++ != '.') return false;
+      if (!number(d.week, 1) || d.week < 1 || d.week > 5 || *p++ != '.') return false;
+      if (!number(d.weekday, 1) || d.weekday > 6) return false;
+    } else if (*p == 'J') {
+      ++p;
+      d.kind = 'J';
+      if (!number(d.day, 3) || d.day < 1 || d.day > 365) return false;
+    } else {
+      d.kind = 'N';
+      if (!number(d.day, 3) || d.day > 365) return false;
+    }
+    d.timeSecs = 7200;
+    if (*p == '/') {
+      ++p;
+      if (!offset(d.timeSecs, true)) return false;
+    }
+    return true;
+  }
+};
+
+// Local seconds (since the epoch, on the local wall clock) of a rule date in year y.
+int64_t localChange(const TzDate& d, const int64_t y) {
+  int64_t days = 0;
+  if (d.kind == 'M') {
+    const int64_t first = daysFromCivil(y, d.month, 1);
+    const int firstWd = static_cast<int>(((first % 7) + 7 + 4) % 7);  // 1970-01-01 was a Thursday
+    int mday = 1 + (d.weekday - firstWd + 7) % 7 + (d.week - 1) * 7;
+    if (mday > monthDays(y, d.month)) mday -= 7;
+    days = first + mday - 1;
+  } else if (d.kind == 'J') {
+    days = daysFromCivil(y, 1, 1) + d.day - 1 + (isLeap(y) && d.day >= 60 ? 1 : 0);
+  } else {
+    days = daysFromCivil(y, 1, 1) + d.day;
+  }
+  return days * kDaySecs + d.timeSecs;
+}
+
+// Seconds east of UTC in force at `utc`.
+int32_t offsetAt(const TzRule& r, const int64_t utc) {
+  if (!r.hasDst) return r.stdOffset;
+  const int64_t y = yearOfDays(floorDiv(utc + r.stdOffset, kDaySecs));
+  // The change into DST happens on standard time, the change back on DST.
+  const int64_t startUtc = localChange(r.start, y) - r.stdOffset;
+  const int64_t endUtc = localChange(r.end, y) - r.dstOffset;
+  const bool dst = startUtc < endUtc ? (utc >= startUtc && utc < endUtc) : !(utc >= endUtc && utc < startUtc);
+  return dst ? r.dstOffset : r.stdOffset;
+}
+
+// UTC of local `hour`:00 on local day `localDay` (days since the epoch).
+int64_t utcOfLocalHour(const TzRule& r, const int64_t localDay, const int hour, const int32_t guessOffset) {
+  const int64_t local = localDay * kDaySecs + hour * 3600;
+  int64_t u = local - guessOffset;
+  for (int i = 0; i < 3; ++i) {
+    const int64_t next = local - offsetAt(r, u);
+    if (next == u) break;
+    u = next;
+  }
+  return u;
 }
 
 }  // namespace
 
+bool utcOffsetAt(const char* posixTz, const int64_t utc, int32_t& offsetSecs) {
+  if (posixTz == nullptr || posixTz[0] == '\0') return false;
+  TzRule rule;
+  if (!TzParser(posixTz).parse(rule)) return false;
+  offsetSecs = offsetAt(rule, utc);
+  return true;
+}
+
 int64_t mostRecentBoundary(const int64_t nowUtc, const char* posixTz, const int hour) {
   if (nowUtc <= 0 || posixTz == nullptr || posixTz[0] == '\0' || hour < 0 || hour > 23) return -1;
-  ScopedTz scope(posixTz);
-  const auto now = static_cast<time_t>(nowUtc);
-  int64_t b = localHourOn(now, 0, hour);
-  if (b > nowUtc) b = localHourOn(now, -1, hour);
+  TzRule rule;
+  if (!TzParser(posixTz).parse(rule)) return -1;
+  const int32_t off = offsetAt(rule, nowUtc);
+  const int64_t today = floorDiv(nowUtc + off, kDaySecs);
+  int64_t b = utcOfLocalHour(rule, today, hour, off);
+  if (b > nowUtc) b = utcOfLocalHour(rule, today - 1, hour, off);
   return b;
 }
 

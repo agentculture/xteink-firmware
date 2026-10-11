@@ -87,9 +87,16 @@ const char* triggerName(Trigger t);
 const char* routineTimezone(bool timezoneChosen, const char* clockTz);
 
 // The most recent local kRunHourLocal:00 at or before nowUtc under posixTz,
-// as a UTC epoch; -1 when it cannot be computed. Uses the C library's TZ
-// machinery (setenv/tzset/mktime), restoring the previous TZ afterwards.
+// as a UTC epoch; -1 when it cannot be computed (no clock, or a rule that does
+// not parse). The rule is evaluated by hand: the process-wide TZ variable is
+// never touched, because the render task formats the clock under it.
 int64_t mostRecentBoundary(int64_t nowUtc, const char* posixTz, int hour = kRunHourLocal);
+
+// The UTC offset (seconds east of UTC) a POSIX TZ rule ("IST-2IDT,M3.4.4/26,
+// M10.5.0", "UTC+05:30", "<+03>-3") puts in force at `utc`. Supports the
+// Mm.w.d, Jn and n date forms and rule times from -167 to 167 hours. False when
+// the rule does not parse.
+bool utcOffsetAt(const char* posixTz, int64_t utc, int32_t& offsetSecs);
 
 // The routine is due when lastRun is earlier than the most recent boundary
 // (or is corrupt: far in the future). lastRun <= 0 = never ran.

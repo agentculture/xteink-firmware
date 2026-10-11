@@ -301,7 +301,8 @@ INSTANTIATE_TEST_SUITE_P(Jerusalem, DailyDstTest,
                            return "d" + n;
                          });
 
-TEST(DailyBoundary, RestoresTheProcessTimezone) {
+TEST(DailyBoundary, NeverTouchesTheProcessTimezone) {
+  // The render task formats the clock under TZ while setup() runs the routine.
   setenv("TZ", "UTC0", 1);
   tzset();
   mostRecentBoundary(utc(2026, 10, 11, 12), kJerusalem);
@@ -311,6 +312,91 @@ TEST(DailyBoundary, RestoresTheProcessTimezone) {
   tzset();
   mostRecentBoundary(utc(2026, 10, 11, 12), kJerusalem);
   EXPECT_EQ(getenv("TZ"), nullptr);
+}
+
+// Every rule the clock settings ship (src/util/Timezones.cpp), plus forms the
+// C library accepts that the table does not use.
+const char* const kShippedZones[] = {
+    "ACST-9:30ACDT,M10.1.0,M4.1.0/3", "AEST-10AEDT,M10.1.0,M4.1.0/3", "AKST9AKDT,M3.2.0,M11.1.0",
+    "AST4ADT,M3.2.0,M11.1.0",         "AZOT1AZOST,M3.5.0/0,M10.5.0/1", "CET-1CEST,M3.5.0,M10.5.0/3",
+    "CLT4CLST,M9.1.6/24,M4.1.6/24",   "CST6CDT,M3.2.0,M11.1.0",        "EET-2EEST,M3.5.0/3,M10.5.0/4",
+    "EET-2EEST,M4.5.5/0,M10.5.4/24",  "EST5EDT,M3.2.0,M11.1.0",        "GMT0BST,M3.5.0/1,M10.5.0",
+    "IST-2IDT,M3.4.4/26,M10.5.0",     "MST7MDT,M3.2.0,M11.1.0",        "NST3:30NDT,M3.2.0,M11.1.0",
+    "NZST-12NZDT,M9.5.0,M4.1.0/3",    "PST8PDT,M3.2.0,M11.1.0",        "ACST-9:30",
+    "AFT-4:30",                       "IST-5:30",                      "NPT-5:45",
+    "LINT-14",                        "HST10",                         "UTC0",
+    "UTC+05:30",                      "UTC-05:45",                     "UTC-0:30",
+    "<+03>-3",                        "EST5EDT",                       "XST-1XDT-3,J60/1,300/-1",
+};
+
+int32_t libcOffset(const char* tz, const int64_t epoch) {
+  setenv("TZ", tz, 1);
+  tzset();
+  const auto t = static_cast<time_t>(epoch);
+  struct tm tm{};
+  localtime_r(&t, &tm);
+  return static_cast<int32_t>(tm.tm_gmtoff);
+}
+
+// The old implementation: mktime() under the rule.
+int64_t libcBoundary(const char* tz, const int64_t nowUtc, const int hour) {
+  setenv("TZ", tz, 1);
+  tzset();
+  const auto at = [](const time_t t, const int dayOffset, const int h) {
+    struct tm tm{};
+    localtime_r(&t, &tm);
+    tm.tm_mday += dayOffset;
+    tm.tm_hour = h;
+    tm.tm_min = tm.tm_sec = 0;
+    tm.tm_isdst = -1;
+    return static_cast<int64_t>(mktime(&tm));
+  };
+  int64_t b = at(static_cast<time_t>(nowUtc), 0, hour);
+  if (b > nowUtc) b = at(static_cast<time_t>(nowUtc), -1, hour);
+  return b;
+}
+
+TEST(DailyBoundary, OffsetsMatchTheCLibraryForEveryShippedZone) {
+  for (const char* tz : kShippedZones) {
+    int failures = 0;
+    for (int64_t t = utc(2025, 12, 1); t < utc(2028, 2, 1) && failures < 3; t += 15 * 60) {
+      int32_t mine = 0;
+      ASSERT_TRUE(utcOffsetAt(tz, t, mine)) << tz;
+      const int32_t want = libcOffset(tz, t);
+      if (mine != want) {
+        ++failures;
+        ADD_FAILURE() << tz << " at " << t << ": " << mine << " != " << want;
+      }
+    }
+  }
+  unsetenv("TZ");
+  tzset();
+}
+
+TEST(DailyBoundary, BoundaryMatchesTheCLibraryForEveryShippedZone) {
+  for (const char* tz : kShippedZones) {
+    int failures = 0;
+    for (int64_t t = utc(2026, 1, 1, 0, 7); t < utc(2028, 1, 1) && failures < 3; t += 5 * kHour + 13 * 60) {
+      const int64_t mine = mostRecentBoundary(t, tz);
+      const int64_t want = libcBoundary(tz, t, kRunHourLocal);
+      if (mine != want) {
+        ++failures;
+        ADD_FAILURE() << tz << " at " << t << ": " << mine << " != " << want;
+      }
+    }
+  }
+  unsetenv("TZ");
+  tzset();
+}
+
+TEST(DailyBoundary, RulesThatDoNotParseAreRejected) {
+  int32_t off = 0;
+  for (const char* tz : {"", "X", "IST-2IDT,M3.4.4", "IST-2IDT,M13.1.0,M10.5.0", "IST-99", "CET-1CEST,M3.5.0,M10.5.0/3x",
+                         "<+03-3"}) {
+    EXPECT_FALSE(utcOffsetAt(tz, utc(2026, 6, 1), off)) << tz;
+    EXPECT_EQ(mostRecentBoundary(utc(2026, 6, 1), tz), -1) << tz;
+  }
+  EXPECT_FALSE(utcOffsetAt(nullptr, utc(2026, 6, 1), off));
 }
 
 TEST(DailyBoundary, RejectsUnusableInput) {
