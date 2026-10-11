@@ -111,4 +111,9 @@ int64_t trustedNow() {
   return floor >= MIN_VALID_EPOCH ? floor : 0;
 }
 
+int64_t persistedFloor() {
+  const int64_t floor = readFloor();
+  return floor >= MIN_VALID_EPOCH ? floor : 0;
+}
+
 }  // namespace trustedtime

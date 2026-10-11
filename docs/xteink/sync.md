@@ -12,6 +12,7 @@ same flow.
 | Protocol logic with no device dependencies: JSON build and parse, server order, manifest, delete decision, error codes, status line | `src/xteink/SyncProtocol.{h,cpp}`, tested in `test/xteink_sync/` |
 | Device engine: HTTP, SD, sha256, NVS | `src/xteink/XteinkSync.{h,cpp}` |
 | "Sync books now" screen | `src/activities/settings/XteinkSyncActivity.{h,cpp}` |
+| Once-a-day start routine: 06:00 gate, clock check, battery floors, OTA, sync | `src/xteink/DailyRoutine.{h,cpp}`, tested in `test/xteink_daily/` |
 
 Upstream files get only small hooks:
 
@@ -119,6 +120,8 @@ continues. `E401`, `E426`, `ENET` and `ELOWMEM` stop the sync.
   The sync shows a "Syncing books..." popup. After 60 s it stops starting new
   items and leaves the rest for the next sync.
 
+- **Daily routine** (see below), once per day on a power-on or wake.
+
 The sync runs on the main loop task. That is the simplest safe option on the
 single-core C3: there is no second task holding a TLS session and no shared
 SD state. It is never started while the reader is open, so reading never
@@ -147,10 +150,63 @@ These steps reduce peak heap:
 
 The manual path also reboots onto a fresh heap first.
 
+## Daily routine
+
+`setup()` calls `xteink::daily::onBoot()` after the OTA health check and
+before Home or a resumed book opens. It runs only on power-button and plain
+boots: never after USB power, a flash, a silent heap-defrag reboot, a panic
+reboot, or in recovery mode. It never waits for a button. Progress shows as a
+non-blocking popup.
+
+1. **Clock.** The clock is checked on every start. The system clock as it came
+   up (before TrustedTime restored its floor) is trusted when it is plausible:
+   at or after 2025-01-01 and not behind the persisted floor. Otherwise the
+   RTC is tried under the same rule. If neither holds, the routine joins Wi-Fi
+   and runs SNTP first. If time still can't be established, the routine does
+   not run and `last_run` is not written, so the next start tries again.
+2. **Gate.** The routine runs when NVS `xteink` / `last_run` is earlier than
+   the most recent 06:00 local time. The timezone is the clock's. When none was
+   ever chosen (the shipped default is UTC), Asia/Jerusalem is used.
+3. **Battery.** Below `kDailyJoinBatteryFloor` (20 %) the routine is skipped,
+   `last_run` is not written, and Home shows "Low battery: daily sync skipped".
+4. **Wi-Fi.** `wifijoin::joinAnySaved()` within `kJoinBudgetMs` (20 s). If no
+   join succeeds, `last_run` is not written.
+5. **Firmware.** `OtaUpdater::checkForUpdate()`. Any branch that would need a
+   human or another day is deferred and the books still sync:
+
+   | Case | `fw_outcome` |
+   | --- | --- |
+   | No offer, or the offer is the running build | `none` |
+   | First routine after an install today (the health check passed) | `installed` |
+   | Offer reachable only over the tunnel | `deferred:tunnel` |
+   | Offer, battery below `kDailyOtaBatteryFloor` (40 %) | `deferred:battery` |
+   | Offer again after today's install (no reboot loop) | `deferred:daily_cap` |
+   | Not enough time left under the cap | `deferred:time` |
+   | Check or install failed | `failed:<code>`, for example `failed:EDL`, `failed:ESHA` |
+
+   A deferred offer shows "Update pending" on Home. An install is counted in
+   NVS (`ota_day`, `ota_n`) before it starts, at most
+   `kMaxOtaInstallsPerDay` (1) per routine-day. A successful install reboots
+   at once without writing `last_run`. The new image's health check runs on
+   that boot, then the routine runs again, reports `installed`, syncs and
+   writes `last_run`.
+6. **Books.** `XteinkSync::run()` with the run fields. Both status reports
+   carry `run_started_at`, `run_trigger` (`power_on` or `wake`) and
+   `fw_outcome`. The closing report adds `content_outcome` (`ok`,
+   `partial:<code>`, `error:<code>`). A manual sync sends none of these.
+7. `last_run` is written once the sync step has run, whatever its result.
+
+Everything runs under one hard cap, `kDailyRoutineCapMs` (105 s). The
+target is a queued book on the device within 120 s of power-on. The OTA
+install gets what is left after `kSyncReserveMs` (35 s), which is kept for the
+sync. The sync stops starting new items 10 s before the cap and is cancelled
+at the cap.
+
 ## Status line
 
 The home screen shows one line above the button hints: `Synced 14:02 · 2 new`,
-`Synced 14:02`, or `Sync error E401`. The time comes from the RTC when the
+`Synced 14:02`, or `Sync error E401`, followed by the daily routine's note
+when there is one (`Synced 14:02 · Update pending`). The time comes from the RTC when the
 board has one, otherwise from the system clock once it is trustworthy, and is
 left out when neither is available. The result is stored in NVS (`xteink` /
 `sync_last`), so it survives a reboot.

@@ -88,6 +88,16 @@ struct InventoryEntry {
   bool unmodified = false;
 };
 
+// Daily-routine fields (src/xteink/DailyRoutine.h). Every field is optional:
+// "" = omit, so a manual "Sync now" never sends stale run fields and the
+// server keeps the values of the last run.
+struct RunFields {
+  std::string startedAt;       // run_started_at, ISO-8601 UTC ("2026-10-11T03:00:05Z")
+  std::string trigger;         // run_trigger: "power_on" | "wake" | "manual"
+  std::string fwOutcome;       // fw_outcome: none | installed | failed:<x> | deferred:<x>
+  std::string contentOutcome;  // content_outcome: free text ("ok", "error:ENET", ...)
+};
+
 struct StatusReport {
   // Negative = omit (free space unknown).
   int64_t freeSdBytes = -1;
@@ -98,6 +108,7 @@ struct StatusReport {
   // Image the device rolled back from after a failed post-update health check
   // (OtaHealth.h), in the firmware_version form. "" = omit the field.
   std::string rolledBackVersion;
+  RunFields run;
 };
 
 std::string buildStatusJson(const StatusReport& report);

@@ -137,14 +137,23 @@ class Sha256 {
 class DevicePort final : public xs::OtaPort {
  public:
   DevicePort(std::string imageUrl, std::string authHeader, const esp_partition_t* slot, size_t& processed,
-             const size_t total, OtaUpdater::ProgressCallback cb, void* cbCtx)
+             const size_t total, OtaUpdater::ProgressCallback cb, void* cbCtx, const uint32_t budget)
       : url(std::move(imageUrl)),
         auth(std::move(authHeader)),
         partition(slot),
         processedSize(processed),
         totalSize(total),
         onProgress(cb),
-        ctx(cbCtx) {}
+        ctx(cbCtx),
+        budgetMs(budget),
+        startMs(millis()) {}
+
+  freeink::SecureHttpClient::AbortCallback abortCallback() const {
+    if (budgetMs == 0) return nullptr;
+    const uint32_t start = startMs;
+    const uint32_t budget = budgetMs;
+    return [start, budget] { return xs::budgetExpired(millis(), start, budget); };
+  }
 
   xs::OtaFetchResult fetch(const xs::OtaSink& sink) override {
     freeink::FetchSink fetchSink;
@@ -160,7 +169,7 @@ class DevicePort final : public xs::OtaPort {
           [&authRef](freeink::SecureHttpClient& http, const bool sameOrigin) {
             configureClient(http, authRef, kTransferTimeoutMs, sameOrigin);
           },
-          fetchSink);
+          fetchSink, abortCallback());
     }
     xs::OtaFetchResult out;
     out.status = r.status;
@@ -272,6 +281,8 @@ class DevicePort final : public xs::OtaPort {
   const size_t totalSize;
   OtaUpdater::ProgressCallback onProgress;
   void* ctx;
+  const uint32_t budgetMs;  // 0 = no wall-clock budget
+  const uint32_t startMs;
   esp_ota_handle_t handle = 0;
   bool open = false;
   Sha256 sha;
@@ -342,7 +353,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   return heapSkipped ? OOM_ERROR : HTTP_ERROR;
 }
 
-OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgress, void* ctx) {
+OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgress, void* ctx, const uint32_t budgetMs) {
   if (decision != xs::OtaDecision::Install) {
     return UPDATE_OLDER_ERROR;
   }
@@ -363,7 +374,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   }
   // 2 KB of members (sha context, scanner): heap, not the caller's stack.
   auto port = makeUniqueNoThrow<DevicePort>(origin + offer.url, "Bearer " + key, updatePartition, processedSize,
-                                            totalSize, onProgress, ctx);
+                                            totalSize, onProgress, ctx, budgetMs);
   if (!port) {
     lastError = xs::Error::LowMemory;
     return OOM_ERROR;

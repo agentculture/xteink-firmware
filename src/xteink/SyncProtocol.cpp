@@ -176,6 +176,10 @@ std::string buildStatusJson(const StatusReport& report) {
     o["unmodified"] = e.unmodified;
   }
   if (!report.rolledBackVersion.empty()) doc["rolled_back_version"] = report.rolledBackVersion;
+  if (!report.run.startedAt.empty()) doc["run_started_at"] = report.run.startedAt;
+  if (!report.run.trigger.empty()) doc["run_trigger"] = report.run.trigger;
+  if (!report.run.fwOutcome.empty()) doc["fw_outcome"] = report.run.fwOutcome;
+  if (!report.run.contentOutcome.empty()) doc["content_outcome"] = report.run.contentOutcome;
   std::string out;
   serializeJson(doc, out);
   return out;
