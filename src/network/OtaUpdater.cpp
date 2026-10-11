@@ -24,6 +24,7 @@
 #include "FirmwareFlasher.h"
 #include "TlsTrust.h"
 #include "WifiPowerSaveGuard.h"
+#include "xteink/OtaHealth.h"
 #include "xteink/XteinkConfig.h"
 
 namespace xs = xteink::sync;
@@ -307,7 +308,8 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
     return NOT_PROVISIONED;
   }
   const std::string auth = "Bearer " + key;
-  const std::string body = xs::buildFirmwareCheckJson(kFirmwareVersion);
+  const std::string rolledBack = xteink::otahealth::rolledBackVersion();
+  const std::string body = xs::buildFirmwareCheckJson(kFirmwareVersion, rolledBack);
 
   bool heapSkipped = false;
   for (const std::string& candidate : xs::serverOrder(xteink::config::getLanUrl(), xteink::config::getTunnelUrl())) {
@@ -326,6 +328,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
       LOG_ERR(kTag, "Status from %s: %d (%s)", candidate.c_str(), status, xs::errorCode(lastError));
       return HTTP_ERROR;
     }
+    xteink::otahealth::clearRolledBackVersion(rolledBack);
     xs::FirmwareOffer parsed;
     if (!xs::parseStatusResponse(response.data(), response.size(), parsed)) {
       LOG_ERR(kTag, "Status response from %s did not parse", candidate.c_str());

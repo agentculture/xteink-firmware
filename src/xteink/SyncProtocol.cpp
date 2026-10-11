@@ -175,6 +175,7 @@ std::string buildStatusJson(const StatusReport& report) {
     o["sha256"] = e.sha256;
     o["unmodified"] = e.unmodified;
   }
+  if (!report.rolledBackVersion.empty()) doc["rolled_back_version"] = report.rolledBackVersion;
   std::string out;
   serializeJson(doc, out);
   return out;
@@ -444,9 +445,10 @@ bool parseStatusResponse(const char* json, const size_t len, FirmwareOffer& offe
   return true;
 }
 
-std::string buildFirmwareCheckJson(const std::string& firmwareVersion) {
+std::string buildFirmwareCheckJson(const std::string& firmwareVersion, const std::string& rolledBackVersion) {
   JsonDocument doc;
   doc["firmware_version"] = firmwareVersion;
+  if (!rolledBackVersion.empty()) doc["rolled_back_version"] = rolledBackVersion;
   std::string out;
   serializeJson(doc, out);
   return out;

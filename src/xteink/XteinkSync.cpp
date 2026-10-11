@@ -29,6 +29,7 @@
 
 #include "CrossPointSettings.h"
 #include "FreeSpaceCache.h"
+#include "OtaHealth.h"
 #include "XteinkConfig.h"
 #include "activities/Activity.h"  // ActivityManager + RenderLock
 #include "components/UITheme.h"
@@ -593,6 +594,7 @@ Outcome run(const GfxRenderer* renderer, const Callbacks& cb, const uint32_t ite
     if (!previous.ok) report.lastError = previous.code;
   }
   report.inventory = inventoryOf(manifest, modified);
+  report.rolledBackVersion = otahealth::rolledBackVersion();
 
   // 2. Server order (c60): the first origin that answers the status report is
   // used for the rest of the sync.
@@ -652,6 +654,9 @@ Outcome run(const GfxRenderer* renderer, const Callbacks& cb, const uint32_t ite
     persistResult(out);
     return out;
   }
+  // Delivered: the closing report need not repeat it.
+  otahealth::clearRolledBackVersion(report.rolledBackVersion);
+  report.rolledBackVersion.clear();
 
   // 3. Queue.
   Queue queue;
