@@ -136,10 +136,11 @@ class Sha256 {
 // checks that keep another device's image out of the slot.
 class DevicePort final : public xs::OtaPort {
  public:
-  DevicePort(std::string imageUrl, std::string authHeader, const esp_partition_t* slot, size_t& processed,
-             const size_t total, OtaUpdater::ProgressCallback cb, void* cbCtx, const uint32_t budget)
+  DevicePort(std::string imageUrl, std::string authHeader, std::string offeredVersion, const esp_partition_t* slot,
+             size_t& processed, const size_t total, OtaUpdater::ProgressCallback cb, void* cbCtx, const uint32_t budget)
       : url(std::move(imageUrl)),
         auth(std::move(authHeader)),
+        version(std::move(offeredVersion)),
         partition(slot),
         processedSize(processed),
         totalSize(total),
@@ -223,6 +224,9 @@ class DevicePort final : public xs::OtaPort {
     return true;
   }
 
+  void recordCandidate() override { xteink::otahealth::recordInstallCandidate(version); }
+  void clearCandidate() override { xteink::otahealth::clearInstallCandidate(); }
+
   void hashReset() override { sha.reset(); }
   void hashUpdate(const uint8_t* data, const size_t len) override { sha.update(data, len); }
   std::string hashHex() override { return sha.hex(); }
@@ -276,6 +280,7 @@ class DevicePort final : public xs::OtaPort {
  private:
   const std::string url;
   const std::string auth;
+  const std::string version;
   const esp_partition_t* partition;
   size_t& processedSize;
   const size_t totalSize;
@@ -300,7 +305,8 @@ void OtaUpdater::setOffer(const xs::FirmwareOffer& newOffer, const std::string& 
   totalSize = offer.present ? static_cast<size_t>(offer.size) : 0;
   processedSize = 0;
   const bool viaTunnel = !xs::isLanOrigin(origin, xteink::config::getLanUrl());
-  decision = xs::decideOta(offer, CROSSPOINT_VERSION, viaTunnel, XTEINK_OTA_TUNNEL != 0);
+  decision = xs::decideOta(offer, CROSSPOINT_VERSION, viaTunnel, XTEINK_OTA_TUNNEL != 0,
+                           xteink::otahealth::rolledBackBuilds());
   LOG_INF(kTag, "Offer from %s: %s (%s, running %s)", origin.c_str(), xs::otaDecisionName(decision),
           offer.present ? offer.version.c_str() : "-", CROSSPOINT_VERSION);
 }
@@ -375,8 +381,8 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
     return INTERNAL_UPDATE_ERROR;
   }
   // 2 KB of members (sha context, scanner): heap, not the caller's stack.
-  auto port = makeUniqueNoThrow<DevicePort>(origin + offer.url, "Bearer " + key, updatePartition, processedSize,
-                                            totalSize, onProgress, ctx, budgetMs);
+  auto port = makeUniqueNoThrow<DevicePort>(origin + offer.url, "Bearer " + key, offer.version, updatePartition,
+                                            processedSize, totalSize, onProgress, ctx, budgetMs);
   if (!port) {
     lastError = xs::Error::LowMemory;
     return OOM_ERROR;

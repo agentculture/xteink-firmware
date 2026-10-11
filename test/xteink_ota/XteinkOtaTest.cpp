@@ -5,6 +5,7 @@
 #include <ArduinoJson.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -135,7 +136,10 @@ class FakePort : public OtaPort {
   bool failWrite = false;
   bool failEnd = false;
   bool wrongDevice = false;
+  bool failBoot = false;
 
+  bool candidate = false;  // NVS rb_cand set
+  std::vector<std::string> events;
   int beginCalls = 0;
   int writeCalls = 0;
   int endCalls = 0;
@@ -170,12 +174,22 @@ class FakePort : public OtaPort {
   }
   bool otaEnd() override {
     ++endCalls;
+    events.push_back("end");
     return !failEnd;
   }
   void otaAbort() override { ++abortCalls; }
   bool setBootPartition() override {
     ++setBootCalls;
-    return true;
+    events.push_back("boot");
+    return !failBoot;
+  }
+  void recordCandidate() override {
+    candidate = true;
+    events.push_back("cand");
+  }
+  void clearCandidate() override {
+    candidate = false;
+    events.push_back("cand-clear");
   }
   void hashReset() override { sha.reset(); }
   void hashUpdate(const uint8_t* data, const size_t len) override { sha.update(data, len); }
@@ -333,6 +347,43 @@ TEST(XteinkOtaDecision, TunnelOnlyOfferIsDeferredByDefault) {
   EXPECT_EQ(decideOta(o, kRunning, false, false), OtaDecision::Install);
 }
 
+TEST(XteinkOtaDecision, ABuildThisDeviceRolledBackFromIsNeverReinstalled) {
+  const FirmwareOffer o = offerFor(makeImage(64), "1.6.5+xteink.9a1b2c3d");
+  const std::string list = rolledBackListAdd("", "xteink-fw 1.6.5+xteink.9a1b2c3d");
+  EXPECT_EQ(decideOta(o, kRunning, false, false, list), OtaDecision::RolledBack);
+  EXPECT_EQ(decideOta(o, kRunning, true, false, list), OtaDecision::RolledBack);
+  EXPECT_STREQ(otaDecisionName(OtaDecision::RolledBack), "deferred:rolled_back");
+  // Another build still installs; the running build is still current.
+  EXPECT_EQ(decideOta(offerFor(makeImage(64), "1.6.5+xteink.0badf00d"), kRunning, false, false, list),
+            OtaDecision::Install);
+  EXPECT_EQ(decideOta(offerFor(makeImage(64), kRunning), kRunning, false, false, rolledBackListAdd("", kRunning)),
+            OtaDecision::Current);
+}
+
+TEST(XteinkOtaDecision, RolledBackListIsABoundedNewestFirstRing) {
+  std::string list;
+  EXPECT_FALSE(rolledBackListContains(list, "1.0"));
+  for (int i = 0; i < 6; ++i) list = rolledBackListAdd(list, "1.6.5+xteink.0000000" + std::to_string(i));
+  // Only the last kMaxRolledBackBuilds survive, newest first, in report form.
+  EXPECT_EQ(list.rfind("xteink-fw 1.6.5+xteink.00000005", 0), 0u) << list;
+  for (int i = 0; i < 6; ++i) {
+    EXPECT_EQ(rolledBackListContains(list, "1.6.5+xteink.0000000" + std::to_string(i)), i >= 2) << i;
+  }
+  EXPECT_EQ(static_cast<size_t>(std::count(list.begin(), list.end(), '\n')) + 1, kMaxRolledBackBuilds);
+  // Re-adding moves to the front without duplicating; either form matches.
+  const std::string again = rolledBackListAdd(list, "xteink-fw 1.6.5+xteink.00000003");
+  EXPECT_EQ(again.rfind("xteink-fw 1.6.5+xteink.00000003", 0), 0u);
+  EXPECT_EQ(std::count(again.begin(), again.end(), '\n'), std::count(list.begin(), list.end(), '\n'));
+  EXPECT_TRUE(rolledBackListContains(again, "xteink-fw 1.6.5+xteink.00000004"));
+  // Garbage in: unchanged.
+  EXPECT_EQ(rolledBackListAdd(list, ""), list);
+  EXPECT_EQ(rolledBackListAdd(list, "xteink-fw "), list);
+  EXPECT_EQ(rolledBackListAdd(list, "a\nb"), list);
+  EXPECT_FALSE(rolledBackListContains(list, ""));
+  EXPECT_EQ(firmwareReportVersion("1.2"), "xteink-fw 1.2");
+  EXPECT_EQ(firmwareReportVersion("xteink-fw 1.2"), "xteink-fw 1.2");
+}
+
 TEST(XteinkOtaDecision, LanOriginMatchesServerOrder) {
   EXPECT_TRUE(isLanOrigin("http://xteink.local:8781", ""));
   EXPECT_TRUE(isLanOrigin("http://192.168.1.20:8781", "HTTP://192.168.1.20:8781/"));
@@ -359,6 +410,34 @@ TEST(XteinkOtaInstall, MatchingImageSwitchesBootPartition) {
   EXPECT_EQ(port.setBootCalls, 1);
   ASSERT_FALSE(port.progressCalls.empty());
   EXPECT_EQ(port.progressCalls.back(), std::make_pair(img.size(), img.size()));
+}
+
+TEST(XteinkOtaInstall, CandidateIsRecordedRightBeforeTheBootSwitch) {
+  // A new image that crashes before its own health check is rolled back by
+  // the bootloader; the old image can only report it if rb_cand was written
+  // by the installer, after the image verified and before the switch.
+  const auto img = makeImage(5000);
+  FakePort port;
+  port.body = img;
+  ASSERT_EQ(installOffer(offerFor(img), port), Error::None);
+  EXPECT_TRUE(port.candidate);
+  EXPECT_EQ(port.events, (std::vector<std::string>{"end", "cand", "boot"}));
+
+  // The switch fails: the running image stays the boot target, nothing to report.
+  FakePort failed;
+  failed.body = img;
+  failed.failBoot = true;
+  EXPECT_EQ(installOffer(offerFor(img), failed), Error::Flash);
+  EXPECT_FALSE(failed.candidate);
+  EXPECT_EQ(failed.events, (std::vector<std::string>{"end", "cand", "boot", "cand-clear"}));
+
+  // Verification failures never touch it.
+  FakePort bad;
+  bad.body = img;
+  FirmwareOffer o = offerFor(img);
+  o.sha256 = kSha;
+  EXPECT_EQ(installOffer(o, bad), Error::Hash);
+  EXPECT_TRUE(bad.events.empty());
 }
 
 TEST(XteinkOtaInstall, FlippedByteIsRefused) {

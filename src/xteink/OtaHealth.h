@@ -67,13 +67,19 @@ class HealthPort {
   virtual std::string runningVersion() = 0;
   // A partition is marked invalid or aborted (esp_ota_get_last_invalid_partition).
   virtual bool hasInvalidPartition() = 0;
-  // "rb_cand": the version of an image under verification, written before
-  // its health check and cleared when it passes.
+  // "rb_cand": the version of an image under verification. The installer
+  // writes it right before switching the boot partition (installOffer), the
+  // new image writes it again (idempotent) before its check, and it is cleared
+  // when the check passes.
   virtual std::string candidate() = 0;
   virtual void setCandidate(const std::string& version) = 0;
   virtual void clearCandidate() = 0;
-  // "rb_version": the version to report as rolled_back_version.
+  // "rb_version": the version to report as rolled_back_version (cleared by
+  // the server's 2xx).
   virtual void setRolledBack(const std::string& version) = 0;
+  // "rb_list": adds the version to the persistent rolled-back record
+  // (SyncProtocol.h, rolledBackListAdd), which no server answer clears.
+  virtual void rememberRolledBack(const std::string& version) = 0;
 };
 
 // The verdict. Display or SD failure selects Rollback without touching the
@@ -89,9 +95,10 @@ enum class BootOutcome : uint8_t {
 };
 
 // The whole boot hook. A non-PENDING_VERIFY boot only records a rollback the
-// previous boot left behind (candidate set and a partition invalid) and
-// returns. A PENDING_VERIFY boot records itself as the candidate, decides, and
-// calls markValid() only on the pass path, markInvalidAndReboot() otherwise.
+// previous boot left behind (candidate set, naming another build, and a
+// partition invalid) in both rb_version and rb_list, and returns. A
+// PENDING_VERIFY boot makes sure it is the candidate, decides, and calls
+// markValid() only on the pass path, markInvalidAndReboot() otherwise.
 // `decision` (optional) receives the verdict of a PENDING_VERIFY boot.
 BootOutcome runOnBoot(HealthPort& port, uint32_t windowMs = kHealthServerWindowMs,
                       uint32_t retryDelayMs = kHealthRetryDelayMs, Decision* decision = nullptr);
@@ -103,6 +110,12 @@ void onBoot(bool displayOk, bool sdOk);
 
 // rolled_back_version for the next status POST ("" when none).
 std::string rolledBackVersion();
+// The persistent rolled-back record for decideOta() ("" when none).
+std::string rolledBackBuilds();
+// Installer side of the candidate bookkeeping (OtaUpdater, before and after
+// esp_ota_set_boot_partition). `offeredVersion` in any form.
+void recordInstallCandidate(const std::string& offeredVersion);
+void clearInstallCandidate();
 // Called after a status POST that carried `sent` got a 2xx answer.
 void clearRolledBackVersion(const std::string& sent);
 #endif

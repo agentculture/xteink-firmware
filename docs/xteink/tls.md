@@ -254,6 +254,7 @@ only in their `-dev-<branch>-<sha>` suffix.
 | `none` | No offer | Nothing to do |
 | `current` | `offer.version` equals `CROSSPOINT_VERSION` (a leading `xteink-fw` prefix is ignored on either side) | No-op |
 | `install` | Any other version, older builds included | Installed |
+| `deferred:rolled_back` | This device already rolled back from the offered build (see below) | Not installed, reported as deferred |
 | `deferred:tunnel` | The offer came from the tunnel origin and `XTEINK_OTA_TUNNEL` is 0 | Not installed, reported as deferred |
 
 `XTEINK_OTA_TUNNEL` defaults to 0 (decision c32). A 6 MB TLS download has not
@@ -276,14 +277,39 @@ on that origin. The body streams through freeink `fetchResumable`:
 4. A non-2xx status, an incomplete body, a byte count other than `size`, or a
    sha256 other than the offer's ends in `esp_ota_abort`.
    `esp_ota_set_boot_partition` is never called on these paths.
-5. Otherwise `esp_ota_end` validates the ESP image, and only then is
-   `esp_ota_set_boot_partition` called.
+5. Otherwise `esp_ota_end` validates the ESP image. The installer then
+   writes NVS `rb_cand` (the offered build) and only then calls
+   `esp_ota_set_boot_partition`. If the switch fails, `rb_cand` is cleared.
+
+### Health check and rollback
+
+The first boot of a new image keeps it only when the display and SD card
+came up and one status POST got any HTTP answer within 45 s
+(`src/xteink/OtaHealth.{h,cpp}`, tested in `test/xteink_ota_health/`).
+Otherwise the image is marked invalid and the bootloader returns to the
+previous one. An image that crashes before the check is aborted by the
+bootloader the same way.
+
+The previous image then finds `rb_cand` naming another build and an invalid
+or aborted slot, and records that build twice:
+
+- `rb_version`: sent once as `rolled_back_version` and cleared by the
+  server's 2xx answer.
+- `rb_list`: the last 4 rolled-back builds, never cleared by a server answer.
+  An offer naming one of them gets `deferred:rolled_back` and is not
+  installed, so a build that failed here never loops. Since release builds
+  carry the commit in their version (see below), a fixed build gets a new
+  version and installs normally.
+
+Because the installer writes `rb_cand` before the boot switch, a crash before
+the new image's own bookkeeping is still reported. The new image rewrites
+`rb_cand` only when it is missing (for example after a USB flash).
 
 Error codes (`OtaUpdater::getLastError()`, `errorCode()`) reuse the sync's
 codes: `ESHA` (sha256 mismatch), `EDL` (truncated or oversized), `ENET`,
 `E401`, `EHTTP`, `ELOWMEM`, plus `EDEV` (image for another chip or board) and
 `EFLASH` (an `esp_ota_*` call failed).
 
-Release envs set `CROSSPOINT_VERSION` to `[crosspoint] version` from
-`platformio.ini`. Dev builds get `<version>-dev-<branch>-<sha>` from
-`scripts/git_branch.py`.
+Upstream release envs set `CROSSPOINT_VERSION` to `[crosspoint] version` from
+`platformio.ini`, so every `gh_release` build reports the same version. Dev
+builds get `<version>-dev-<branch>-<sha>` from `scripts/git_branch.py`.

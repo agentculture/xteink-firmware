@@ -42,6 +42,7 @@ class FakePort : public HealthPort {
   std::vector<uint32_t> postBudgets;
   std::string cand;
   std::string rolledBack;
+  std::string rolledBackList;  // NVS rb_list: never cleared by a status POST
   std::vector<std::string> events;
 
   bool pendingVerify() override { return pending; }
@@ -80,6 +81,7 @@ class FakePort : public HealthPort {
     events.push_back("cand-clear");
   }
   void setRolledBack(const std::string& v) override { rolledBack = v; }
+  void rememberRolledBack(const std::string& v) override { rolledBackList = xteink::sync::rolledBackListAdd(rolledBackList, v); }
 };
 
 // --- decideHealth ---------------------------------------------------------
@@ -249,6 +251,49 @@ TEST(OtaHealthBoot, PreviousImageRecordsTheRolledBackVersion) {
   p.rolledBack.clear();
   EXPECT_EQ(runOnBoot(p, kWindow, kDelay), BootOutcome::NotPending);
   EXPECT_TRUE(p.rolledBack.empty());
+}
+
+TEST(OtaHealthBoot, ACrashBeforeTheHealthCheckIsStillReported) {
+  // The installer wrote rb_cand before switching the boot partition (the
+  // offered build, in whatever form the server named it). The new image
+  // crashed before onBoot(); the bootloader aborted it and booted the old one.
+  FakePort p;
+  p.pending = false;
+  p.invalidPartition = true;
+  p.version = "xteink-fw 1.1.0-old";
+  p.cand = xteink::sync::firmwareReportVersion("1.2.0-new");
+  EXPECT_EQ(runOnBoot(p, kWindow, kDelay), BootOutcome::NotPending);
+  EXPECT_EQ(p.rolledBack, "xteink-fw 1.2.0-new");
+  EXPECT_TRUE(xteink::sync::rolledBackListContains(p.rolledBackList, "1.2.0-new"));
+  EXPECT_TRUE(p.cand.empty());
+}
+
+TEST(OtaHealthBoot, TheRolledBackRecordOutlivesTheReport) {
+  FakePort p;
+  p.postDefault = false;
+  ASSERT_EQ(runOnBoot(p, kWindow, kDelay), BootOutcome::RolledBack);
+  p.pending = false;
+  p.invalidPartition = true;
+  p.version = "xteink-fw 1.1.0-old";
+  runOnBoot(p, kWindow, kDelay);
+  ASSERT_EQ(p.rolledBack, "xteink-fw 1.2.0-new");
+  // The server acknowledged rolled_back_version (2xx clears rb_version) ...
+  p.rolledBack.clear();
+  runOnBoot(p, kWindow, kDelay);
+  // ... but the device still refuses that build when it is offered again.
+  xteink::sync::FirmwareOffer offer;
+  offer.present = true;
+  offer.version = "1.2.0-new";
+  EXPECT_EQ(xteink::sync::decideOta(offer, "1.1.0-old", false, false, p.rolledBackList),
+            xteink::sync::OtaDecision::RolledBack);
+}
+
+TEST(OtaHealthBoot, PendingBootKeepsTheInstallerCandidateWithoutRewritingIt) {
+  FakePort p;
+  p.cand = p.version;  // written by the installer
+  p.posts = {true};
+  EXPECT_EQ(runOnBoot(p, kWindow, kDelay), BootOutcome::Valid);
+  EXPECT_EQ(p.events, (std::vector<std::string>{"post", "cand-clear", "valid"}));
 }
 
 TEST(OtaHealthBoot, StaleCandidateWithoutInvalidPartitionIsNotReported) {

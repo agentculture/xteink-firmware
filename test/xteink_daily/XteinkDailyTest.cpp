@@ -657,6 +657,14 @@ INSTANTIATE_TEST_SUITE_P(
                  "deferred:tunnel",
                  0,
                  Note::FirmwarePending},
+        // The offer names a build this device rolled back from: never again.
+        FwBranch{"rolled_back",
+                 {sync::OtaDecision::RolledBack, sync::Error::None},
+                 90,
+                 sync::Error::None,
+                 "deferred:rolled_back",
+                 0,
+                 Note::FirmwarePending},
         FwBranch{"check_failed",
                  {sync::OtaDecision::None, sync::Error::Network},
                  90,
@@ -831,7 +839,8 @@ TEST(DailyFormat, ContentOutcome) {
 
 TEST(DailyFormat, FwOutcomeStringsMatchTheServerPattern) {
   for (const char* s :
-       {kFwNone, kFwInstalled, kFwDeferredTunnel, kFwDeferredBattery, kFwDeferredDailyCap, kFwDeferredTime}) {
+       {kFwNone, kFwInstalled, kFwDeferredTunnel, kFwDeferredBattery, kFwDeferredDailyCap, kFwDeferredTime,
+        kFwDeferredRolledBack, sync::otaDecisionName(sync::OtaDecision::RolledBack)}) {
     EXPECT_TRUE(fwOutcomeValid(s)) << s;
   }
   for (const auto e : {sync::Error::Network, sync::Error::Download, sync::Error::Hash, sync::Error::Flash,

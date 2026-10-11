@@ -143,6 +143,8 @@ constexpr const char* kFwDeferredTunnel = "deferred:tunnel";
 constexpr const char* kFwDeferredBattery = "deferred:battery";
 constexpr const char* kFwDeferredDailyCap = "deferred:daily_cap";
 constexpr const char* kFwDeferredTime = "deferred:time";
+// The offer names a build this device already rolled back from (rb_list).
+constexpr const char* kFwDeferredRolledBack = "deferred:rolled_back";
 std::string fwFailed(sync::Error e);  // "failed:<code>"
 
 // Persistent note for the Home status line.

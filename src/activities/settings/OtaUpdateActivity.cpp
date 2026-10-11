@@ -43,7 +43,8 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
 
   const auto res = updater.checkForUpdate();
   // NO_UPDATE means the server made no installable offer: none at all, the offer
-  // is the running build, or it is only reachable over the tunnel (deferred).
+  // is the running build, it is only reachable over the tunnel (deferred), or this
+  // device already rolled back from it.
   // None of these is a failure; getDecision() says which message to show.
   if (res == OtaUpdater::NO_UPDATE) {
     LOG_DBG("OTA", "No installable offer: %s", xteink::sync::otaDecisionName(updater.getDecision()));
@@ -55,6 +56,9 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
           break;
         case xteink::sync::OtaDecision::Deferred:
           noUpdateText = "Update available on home Wi-Fi only";
+          break;
+        case xteink::sync::OtaDecision::RolledBack:
+          noUpdateText = "Offered update failed here before";
           break;
         default:
           noUpdateText = "No update offered";

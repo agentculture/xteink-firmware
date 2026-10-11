@@ -179,6 +179,7 @@ non-blocking popup.
    | No offer, or the offer is the running build | `none` |
    | First routine after an install today (the health check passed) | `installed` |
    | Offer reachable only over the tunnel | `deferred:tunnel` |
+   | Offer names a build this device rolled back from (`docs/xteink/tls.md`) | `deferred:rolled_back` |
    | Offer, battery below `kDailyOtaBatteryFloor` (40 %) | `deferred:battery` |
    | Offer again after today's install (no reboot loop) | `deferred:daily_cap` |
    | Not enough time left under the cap | `deferred:time` |

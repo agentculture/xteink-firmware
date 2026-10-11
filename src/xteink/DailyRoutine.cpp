@@ -479,6 +479,10 @@ class Routine {
         fw = kFwDeferredTunnel;
         note = Note::FirmwarePending;
         return false;
+      case sync::OtaDecision::RolledBack:
+        fw = kFwDeferredRolledBack;
+        note = Note::FirmwarePending;
+        return false;
       case sync::OtaDecision::Install:
         break;
     }

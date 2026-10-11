@@ -34,7 +34,7 @@ class OtaUpdater {
 
   enum OtaUpdaterError {
     OK = 0,
-    NO_UPDATE,  // no offer, the offer is the running build, or it is deferred
+    NO_UPDATE,  // no offer, the offer is the running build, deferred, or rolled back from
     HTTP_ERROR,
     JSON_PARSE_ERROR,
     UPDATE_OLDER_ERROR,  // installUpdate() without an installable offer
@@ -56,7 +56,8 @@ class OtaUpdater {
   // POST /api/device/status (firmware_version only) to the LAN origin, then
   // the tunnel, and reads the offer from the first origin that answers.
   // OK when the offer should be installed; NO_UPDATE when there is none, it is
-  // the running build, or it is deferred (getDecision() says which).
+  // the running build, it is deferred, or this device already rolled back from
+  // it (getDecision() says which).
   OtaUpdaterError checkForUpdate();
 
   // Takes an offer read from another status response (for example the daily

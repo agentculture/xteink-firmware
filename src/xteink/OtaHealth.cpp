@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "SyncProtocol.h"
+
 namespace xteink::otahealth {
 
 const char* reasonName(const Reason r) {
@@ -63,14 +65,20 @@ BootOutcome runOnBoot(HealthPort& port, const uint32_t windowMs, const uint32_t 
     // or was aborted by the bootloader (crash, power cut). Report it once.
     const std::string cand = port.candidate();
     if (!cand.empty()) {
-      if (port.hasInvalidPartition() && cand != port.runningVersion()) port.setRolledBack(cand);
+      if (port.hasInvalidPartition() && !sync::sameFirmwareVersion(cand, port.runningVersion())) {
+        port.setRolledBack(cand);
+        port.rememberRolledBack(cand);
+      }
       port.clearCandidate();
     }
     return BootOutcome::NotPending;
   }
 
-  // Recorded before any check, so a crash during the check is reported too.
-  port.setCandidate(port.runningVersion());
+  // The installer recorded the candidate before switching the boot partition;
+  // make sure (an image flashed another way, or an older installer) without
+  // rewriting NVS when it is already set.
+  const std::string running = port.runningVersion();
+  if (port.candidate() != running) port.setCandidate(running);
   const Decision d = decideHealth(port, windowMs, retryDelayMs);
   if (decision) *decision = d;
   if (d.verdict == Verdict::Valid) {
@@ -111,19 +119,23 @@ constexpr const char* kFirmwareVersion = "xteink-fw " CROSSPOINT_VERSION;
 constexpr const char* kNvsNamespace = "xteink";  // shared with XteinkConfig/XteinkSync
 constexpr const char* kNvsCandidate = "rb_cand";
 constexpr const char* kNvsRolledBack = "rb_version";
+constexpr const char* kNvsRolledBackList = "rb_list";
 constexpr size_t kMaxVersionLen = 96;
+// rb_list: kMaxRolledBackBuilds report-form versions, newline-separated.
+constexpr size_t kMaxListLen = sync::kMaxRolledBackBuilds * (sync::kMaxFirmwareVersionLen + 11);
 
-std::string nvsGet(const char* key) {
+std::string nvsGet(const char* key, const size_t maxLen = kMaxVersionLen) {
   nvs_handle_t h;
   if (nvs_open(kNvsNamespace, NVS_READONLY, &h) != ESP_OK) return "";
-  char buf[kMaxVersionLen + 1];
-  size_t len = sizeof(buf);
-  if (nvs_get_str(h, key, buf, &len) != ESP_OK) buf[0] = '\0';
+  std::string buf(maxLen + 1, '\0');
+  size_t len = buf.size();
+  if (nvs_get_str(h, key, buf.data(), &len) != ESP_OK) len = 0;
   nvs_close(h);
+  buf.resize(len > 0 ? len - 1 : 0);  // len counts the terminator
   return buf;
 }
 
-void nvsSet(const char* key, const std::string& value) {
+void nvsSet(const char* key, const std::string& value, const size_t maxLen = kMaxVersionLen) {
   nvs_handle_t h;
   if (nvs_open(kNvsNamespace, NVS_READWRITE, &h) != ESP_OK) {
     LOG_ERR(kTag, "NVS open failed");
@@ -134,7 +146,7 @@ void nvsSet(const char* key, const std::string& value) {
     err = nvs_erase_key(h, key);
     if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
   } else {
-    err = nvs_set_str(h, key, value.substr(0, kMaxVersionLen).c_str());
+    err = nvs_set_str(h, key, value.substr(0, maxLen).c_str());
   }
   if (err == ESP_OK) err = nvs_commit(h);
   nvs_close(h);
@@ -201,6 +213,9 @@ class DevicePort final : public HealthPort {
     LOG_INF(kTag, "Rolled back from %s", version.c_str());
     nvsSet(kNvsRolledBack, version);
   }
+  void rememberRolledBack(const std::string& version) override {
+    nvsSet(kNvsRolledBackList, sync::rolledBackListAdd(rolledBackBuilds(), version), kMaxListLen);
+  }
 
  private:
   const bool display;
@@ -227,6 +242,14 @@ void onBoot(const bool displayOk, const bool sdOk) {
 }
 
 std::string rolledBackVersion() { return nvsGet(kNvsRolledBack); }
+
+std::string rolledBackBuilds() { return nvsGet(kNvsRolledBackList, kMaxListLen); }
+
+void recordInstallCandidate(const std::string& offeredVersion) {
+  nvsSet(kNvsCandidate, sync::firmwareReportVersion(offeredVersion));
+}
+
+void clearInstallCandidate() { nvsSet(kNvsCandidate, ""); }
 
 void clearRolledBackVersion(const std::string& sent) {
   if (sent.empty() || nvsGet(kNvsRolledBack) != sent) return;

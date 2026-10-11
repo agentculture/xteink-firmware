@@ -470,6 +470,46 @@ bool sameFirmwareVersion(const std::string& offered, const std::string& running)
   return stripFirmwarePrefix(offered) == stripFirmwarePrefix(running);
 }
 
+std::string firmwareReportVersion(const std::string& version) { return "xteink-fw " + stripFirmwarePrefix(version); }
+
+namespace {
+std::vector<std::string> splitLines(const std::string& s) {
+  std::vector<std::string> out;
+  size_t start = 0;
+  while (start < s.size()) {
+    size_t end = s.find('\n', start);
+    if (end == std::string::npos) end = s.size();
+    if (end > start) out.push_back(s.substr(start, end - start));
+    start = end + 1;
+  }
+  return out;
+}
+}  // namespace
+
+bool rolledBackListContains(const std::string& stored, const std::string& version) {
+  if (stripFirmwarePrefix(version).empty()) return false;
+  const std::vector<std::string> list = splitLines(stored);
+  return std::any_of(list.begin(), list.end(), [&version](const std::string& v) { return sameFirmwareVersion(v, version); });
+}
+
+std::string rolledBackListAdd(const std::string& stored, const std::string& version) {
+  const std::string v = firmwareReportVersion(version);
+  if (stripFirmwarePrefix(version).empty() || v.size() > kMaxFirmwareVersionLen + 10 ||
+      v.find('\n') != std::string::npos) {
+    return stored;
+  }
+  std::string out = v;
+  size_t kept = 1;
+  for (const std::string& old : splitLines(stored)) {
+    if (kept >= kMaxRolledBackBuilds) break;
+    if (sameFirmwareVersion(old, v)) continue;
+    out += '\n';
+    out += old;
+    ++kept;
+  }
+  return out;
+}
+
 const char* otaDecisionName(const OtaDecision d) {
   switch (d) {
     case OtaDecision::None:
@@ -480,14 +520,18 @@ const char* otaDecisionName(const OtaDecision d) {
       return "install";
     case OtaDecision::Deferred:
       return "deferred:tunnel";
+    case OtaDecision::RolledBack:
+      return "deferred:rolled_back";
   }
   return "none";
 }
 
 OtaDecision decideOta(const FirmwareOffer& offer, const std::string& runningVersion, const bool viaTunnel,
-                      const bool tunnelOtaEnabled) {
+                      const bool tunnelOtaEnabled, const std::string& rolledBackList) {
   if (!offer.present) return OtaDecision::None;
   if (sameFirmwareVersion(offer.version, runningVersion)) return OtaDecision::Current;
+  // A build that already failed here stays out until the server offers another.
+  if (rolledBackListContains(rolledBackList, offer.version)) return OtaDecision::RolledBack;
   if (viaTunnel && !tunnelOtaEnabled) return OtaDecision::Deferred;
   return OtaDecision::Install;
 }
@@ -565,7 +609,13 @@ Error installOffer(const FirmwareOffer& offer, OtaPort& port) {
   }
   // esp_ota_end releases the handle whether or not the image validates.
   if (!port.otaEnd()) return Error::Flash;
-  if (!port.setBootPartition()) return Error::Flash;
+  // Recorded before the switch: from here on the next boot may run the new
+  // image, and if it dies before its health check the old image reports it.
+  port.recordCandidate();
+  if (!port.setBootPartition()) {
+    port.clearCandidate();
+    return Error::Flash;
+  }
   return Error::None;
 }
 
