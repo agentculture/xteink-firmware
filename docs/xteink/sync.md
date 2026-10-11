@@ -184,7 +184,9 @@ non-blocking popup.
    | Not enough time left under the cap | `deferred:time` |
    | Check or install failed | `failed:<code>`, for example `failed:EDL`, `failed:ESHA` |
 
-   A deferred offer shows "Update pending" on Home. An install is counted in
+   A deferred offer, or one whose install failed, shows "Update pending" on
+   Home. A step that learns nothing about the offer (the check failed, or
+   there was no time to check) keeps an earlier "Update pending" note. An install is counted in
    NVS (`ota_day`, `ota_n`) before it starts, at most
    `kMaxOtaInstallsPerDay` (1) per routine-day. A successful install reboots
    at once without writing `last_run`. The new image's health check runs on

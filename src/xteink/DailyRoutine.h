@@ -197,6 +197,7 @@ class RoutinePort {
   virtual void setOtaDay(int64_t boundary) = 0;
   virtual uint8_t otaCount() = 0;  // "ota_n": install attempts on that day
   virtual void setOtaCount(uint8_t n) = 0;
+  virtual Note note() = 0;               // "dr_note"
   virtual void setNote(Note note) = 0;  // "dr_note"
 
   // OTA (OtaUpdater) and the book sync (XteinkSync::run).

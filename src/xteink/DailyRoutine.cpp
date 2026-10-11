@@ -370,7 +370,9 @@ class Routine {
     result.fields.trigger = triggerName(trigger);
 
     // 5. Firmware. Returns true when an image was installed (reboot pending).
-    Note note = Note::None;
+    // A step that learns nothing about the offer (no check made, or the check
+    // failed) keeps a pending note: the offer may still be outstanding.
+    Note note = port.note() == Note::FirmwarePending ? Note::FirmwarePending : Note::None;
     if (firmwareStep(battery, note)) {
       result.status = Status::Rebooting;
       port.setNote(Note::None);
@@ -446,7 +448,8 @@ class Routine {
     return true;
   }
 
-  // Sets result.fields.fwOutcome and `note`; true when an image was installed.
+  // Sets result.fields.fwOutcome and `note` (left as is when nothing is learnt
+  // about the offer); true when an image was installed.
   bool firmwareStep(const int battery, Note& note) {
     std::string& fw = result.fields.fwOutcome;
     if (remaining() <= kSyncReserveMs) {
@@ -462,6 +465,7 @@ class Routine {
       fw = fwFailed(check.error);
       return false;
     }
+    note = Note::None;  // the server answered: the note follows its offer
     switch (check.decision) {
       case sync::OtaDecision::None:
         fw = kFwNone;
@@ -505,7 +509,9 @@ class Routine {
       fw = kFwInstalled;
       return true;
     }
+    // The offer is still outstanding.
     fw = fwFailed(e);
+    note = Note::FirmwarePending;
     return false;
   }
 };
@@ -664,6 +670,7 @@ class DevicePort final : public RoutinePort {
   void setOtaCount(const uint8_t n) override {
     nvsWrite(kNvsOtaCount, [n](nvs_handle_t h) { return nvs_set_u8(h, kNvsOtaCount, n); });
   }
+  Note note() override { return homeNote(); }
   void setNote(const Note note) override {
     const auto b = static_cast<uint8_t>(note);
     cachedNote.store(b);

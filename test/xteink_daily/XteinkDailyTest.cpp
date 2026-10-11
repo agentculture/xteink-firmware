@@ -93,7 +93,7 @@ class FakePort : public RoutinePort {
   int64_t lastRunValue = 0;
   int64_t otaDayValue = 0;
   uint8_t otaCountValue = 0;
-  Note note = Note::None;
+  Note savedNote = Note::None;
   bool rebooted = false;
 
   // Observations.
@@ -152,7 +152,8 @@ class FakePort : public RoutinePort {
   void setOtaDay(const int64_t b) override { otaDayValue = b; }
   uint8_t otaCount() override { return otaCountValue; }
   void setOtaCount(const uint8_t n) override { otaCountValue = n; }
-  void setNote(const Note n) override { note = n; }
+  Note note() override { return savedNote; }
+  void setNote(const Note n) override { savedNote = n; }
   OtaCheck checkOta() override {
     ++checkCalls;
     events.push_back("check");
@@ -550,13 +551,13 @@ TEST(DailyBattery, BelowTheJoinFloorSkipsEverything) {
   EXPECT_EQ(p.joinCalls, 0);
   EXPECT_EQ(p.syncCalls, 0);
   EXPECT_EQ(p.setLastRunCalls, 0);  // a charged start later today still runs
-  EXPECT_EQ(p.note, Note::LowBattery);
+  EXPECT_EQ(p.savedNote, Note::LowBattery);
 
   // Charged later the same day: it runs and the note is replaced.
   p.nextBoot(p.systemClock + 2 * kHour);
   p.battery = 80;
   EXPECT_EQ(run(p, Trigger::PowerOn).status, Status::Ran);
-  EXPECT_EQ(p.note, Note::None);
+  EXPECT_EQ(p.savedNote, Note::None);
 }
 
 TEST(DailyBattery, FloorsAreOrdered) {
@@ -593,7 +594,7 @@ TEST_P(DailyFirmwareBranchTest, SyncStillRunsInTheSameStartWithTheMatchingOutcom
   EXPECT_EQ(p.syncFields.fwOutcome, b.fwOutcome) << b.name;
   EXPECT_EQ(r.fields.fwOutcome, b.fwOutcome) << b.name;
   EXPECT_TRUE(fwOutcomeValid(r.fields.fwOutcome)) << b.name;
-  EXPECT_EQ(p.note, b.note) << b.name;
+  EXPECT_EQ(p.savedNote, b.note) << b.name;
   EXPECT_EQ(p.setLastRunCalls, 1) << b.name;
 
   // Order: firmware first, then the books, then last_run.
@@ -640,14 +641,14 @@ INSTANTIATE_TEST_SUITE_P(
                  sync::Error::Download,
                  "failed:EDL",
                  1,
-                 Note::None},
+                 Note::FirmwarePending},
         FwBranch{"sha_mismatch",
                  {sync::OtaDecision::Install, sync::Error::None},
                  90,
                  sync::Error::Hash,
                  "failed:ESHA",
                  1,
-                 Note::None},
+                 Note::FirmwarePending},
         // Needs a human: the offer is only reachable over the tunnel.
         FwBranch{"needs_human_tunnel",
                  {sync::OtaDecision::Deferred, sync::Error::None},
@@ -664,6 +665,56 @@ INSTANTIATE_TEST_SUITE_P(
                  0,
                  Note::None}),
     [](const auto& info) { return std::string(info.param.name); });
+
+// --- the Home note follows the offer -------------------------------------------------
+
+TEST(DailyNote, AFailedCheckKeepsAnEarlierPendingNote) {
+  // Yesterday the offer was deferred; today the check itself fails. The offer
+  // may still be outstanding, so Home keeps "Update pending".
+  FakePort p = dueDevice();
+  p.savedNote = Note::FirmwarePending;
+  p.ota = {sync::OtaDecision::None, sync::Error::Network};
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(r.status, Status::Ran);
+  EXPECT_EQ(r.fields.fwOutcome, "failed:ENET");
+  EXPECT_EQ(p.savedNote, Note::FirmwarePending);
+}
+
+TEST(DailyNote, AFailedCheckClearsAStaleLowBatteryNote) {
+  FakePort p = dueDevice();
+  p.savedNote = Note::LowBattery;
+  p.ota = {sync::OtaDecision::None, sync::Error::Network};
+  EXPECT_EQ(run(p, Trigger::PowerOn).status, Status::Ran);
+  EXPECT_EQ(p.savedNote, Note::None);
+}
+
+TEST(DailyNote, AFailedInstallLeavesTheOfferPending) {
+  FakePort p = dueDevice();
+  p.ota = {sync::OtaDecision::Install, sync::Error::None};
+  p.installResult = sync::Error::Download;
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(r.fields.fwOutcome, "failed:EDL");
+  EXPECT_EQ(p.savedNote, Note::FirmwarePending);
+}
+
+TEST(DailyNote, NoTimeForTheCheckKeepsAPendingNote) {
+  FakePort p = dueDevice();
+  p.savedNote = Note::FirmwarePending;
+  p.joinHonorsBudget = false;
+  p.joinCostMs = kDailyRoutineCapMs - kSyncReserveMs;
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(p.checkCalls, 0);
+  EXPECT_EQ(r.fields.fwOutcome, "deferred:time");
+  EXPECT_EQ(p.savedNote, Note::FirmwarePending);
+}
+
+TEST(DailyNote, AnAnswerWithoutAnOfferClearsThePendingNote) {
+  FakePort p = dueDevice();
+  p.savedNote = Note::FirmwarePending;
+  p.ota = {sync::OtaDecision::None, sync::Error::None};
+  EXPECT_EQ(run(p, Trigger::PowerOn).status, Status::Ran);
+  EXPECT_EQ(p.savedNote, Note::None);
+}
 
 // --- install, reboot, health check, no loop ----------------------------------------------
 
@@ -708,7 +759,7 @@ TEST(DailyOta, AnOfferThatKeepsComingBackCannotLoop) {
   EXPECT_EQ(p.installCalls, 0);
   EXPECT_FALSE(p.rebooted);
   EXPECT_EQ(r.fields.fwOutcome, "deferred:daily_cap");
-  EXPECT_EQ(p.note, Note::FirmwarePending);
+  EXPECT_EQ(p.savedNote, Note::FirmwarePending);
   EXPECT_EQ(p.syncCalls, 1);
 
   // Next routine-day it may try once more.
