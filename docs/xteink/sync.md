@@ -137,7 +137,9 @@ measurement. The client checks heap before every connection:
 - http needs 16 KB free and an 8 KB largest block.
 
 Below that, the server is skipped. If no server is left, the sync fails with
-`ELOWMEM`.
+`ELOWMEM`. Before each download the 4 KB SD staging block is allocated first
+and the check runs after it, so the floor applies to what the connection
+actually gets.
 
 These steps reduce peak heap:
 

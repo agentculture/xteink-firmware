@@ -367,9 +367,12 @@ Error callError(const int status) {
 // each retried from its own offset before the item fails (StagedWriter.h).
 Error downloadItem(const Session& session, const QueueItem& item, const Callbacks& cb, Progress& progress) {
   for (int attempt = 0; attempt < 2; ++attempt) {
-    if (!heapOk(session.https)) return Error::LowMemory;
+    // The staging block is taken first so the heap check below sees what is
+    // left for the TLS session: checked before it, the session got 4 KB less
+    // than the floor promises.
     auto block = makeUniqueNoThrow<uint8_t[]>(kWriteBlock);
     if (!block) return Error::LowMemory;
+    if (!heapOk(session.https)) return Error::LowMemory;
     Storage.remove(kPartPath);
     HalFile file;
     if (!Storage.openFileForWrite(kTag, kPartPath, file)) return Error::SdCard;
