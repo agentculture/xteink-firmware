@@ -57,7 +57,13 @@ constexpr const char* kDefaultRoutineTz = "IST-2IDT,M3.4.4/26,M10.5.0";
 constexpr uint32_t kJoinBudgetMs = 20000;      // unattended Wi-Fi join
 constexpr uint32_t kClockSyncBudgetMs = 8000;  // SNTP when the clock is not trusted
 constexpr uint32_t kSyncReserveMs = 35000;     // kept for the book sync after OTA work
-constexpr uint32_t kOtaMinInstallMs = 20000;   // an install with less time left is deferred
+// An install with less time left is deferred. A ~6 MB image over the LAN
+// costs roughly 30 s when nothing goes wrong (erasing the image's sectors,
+// streaming it, writing it); the transfer's per-phase timeout
+// (kTransferTimeoutMs in OtaUpdater.cpp) is another 30 s, so a single stall
+// that resumes can still finish. With a typical join and check, the cap less
+// kSyncReserveMs leaves about 65 s.
+constexpr uint32_t kOtaMinInstallMs = 60000;
 constexpr uint32_t kSyncTailMs = 10000;        // no new download starts in the last 10 s
 
 // Below this the clock was obviously never set (2025-01-01 UTC); the same

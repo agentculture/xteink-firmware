@@ -803,6 +803,49 @@ TEST(DailyCap, NoTimeForAnInstallDefersItAndStillSyncs) {
   EXPECT_EQ(p.syncCalls, 1);
 }
 
+TEST(DailyCap, AnInstallStartsOnlyWithARealisticBudget) {
+  // 20 s used to be enough to start: esp_ota_begin then erased the slot and the
+  // transfer was cancelled long before 6 MB arrived.
+  static_assert(kOtaMinInstallMs >= 60000, "a 6 MB LAN install plus one stall needs >= 60 s");
+  static_assert(kDailyRoutineCapMs - kSyncReserveMs - kJoinBudgetMs / 4 >= kOtaMinInstallMs,
+                "a typical join and check must leave room for an install");
+  FakePort p = dueDevice();
+  p.ota = {sync::OtaDecision::Install, sync::Error::None};
+  p.joinCostMs = 3000;
+  p.checkCostMs = 1000;
+  EXPECT_EQ(run(p, Trigger::PowerOn).status, Status::Rebooting);
+  EXPECT_GE(p.lastInstallBudget, kOtaMinInstallMs);
+
+  // A slow join leaves less than the minimum: deferred, the day's attempt kept.
+  FakePort slow = dueDevice();
+  slow.ota = {sync::OtaDecision::Install, sync::Error::None};
+  slow.joinCostMs = 12000;
+  const Result r = run(slow, Trigger::PowerOn);
+  EXPECT_EQ(r.fields.fwOutcome, "deferred:time");
+  EXPECT_EQ(slow.installCalls, 0);
+  EXPECT_EQ(slow.otaCountValue, 0);
+}
+
+TEST(DailyCap, ABudgetCancelledInstallDoesNotUseUpTheDay) {
+  FakePort p = dueDevice();
+  p.ota = {sync::OtaDecision::Install, sync::Error::None};
+  p.installResult = sync::Error::Cancelled;
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(r.status, Status::Ran);
+  EXPECT_EQ(p.installCalls, 1);
+  EXPECT_EQ(r.fields.fwOutcome, "deferred:time");
+  EXPECT_EQ(p.savedNote, Note::FirmwarePending);
+  EXPECT_EQ(p.otaCountValue, 0);
+  EXPECT_EQ(p.syncCalls, 1);
+
+  // A real failure still counts (a crash mid-install must not loop).
+  FakePort q = dueDevice();
+  q.ota = {sync::OtaDecision::Install, sync::Error::None};
+  q.installResult = sync::Error::Hash;
+  run(q, Trigger::PowerOn);
+  EXPECT_EQ(q.otaCountValue, 1);
+}
+
 TEST(DailyCap, NoTimeForTheCheckSkipsItAndStillSyncs) {
   FakePort p = dueDevice();
   p.joinHonorsBudget = false;

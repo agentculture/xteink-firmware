@@ -513,6 +513,14 @@ class Routine {
       fw = kFwInstalled;
       return true;
     }
+    if (e == sync::Error::Cancelled) {
+      // The time budget ran out: nothing was switched and nothing can loop,
+      // so the attempt does not count against the day.
+      port.setOtaCount(static_cast<uint8_t>(attempts));
+      fw = kFwDeferredTime;
+      note = Note::FirmwarePending;
+      return false;
+    }
     // The offer is still outstanding.
     fw = fwFailed(e);
     note = Note::FirmwarePending;

@@ -182,14 +182,20 @@ non-blocking popup.
    | Offer names a build this device rolled back from (`docs/xteink/tls.md`) | `deferred:rolled_back` |
    | Offer, battery below `kDailyOtaBatteryFloor` (40 %) | `deferred:battery` |
    | Offer again after today's install (no reboot loop) | `deferred:daily_cap` |
-   | Not enough time left under the cap | `deferred:time` |
+   | Not enough time left under the cap, or the install ran out of it | `deferred:time` |
    | Check or install failed | `failed:<code>`, for example `failed:EDL`, `failed:ESHA` |
 
    A deferred offer, or one whose install failed, shows "Update pending" on
    Home. A step that learns nothing about the offer (the check failed, or
-   there was no time to check) keeps an earlier "Update pending" note. An install is counted in
-   NVS (`ota_day`, `ota_n`) before it starts, at most
-   `kMaxOtaInstallsPerDay` (1) per routine-day. A successful install reboots
+   there was no time to check) keeps an earlier "Update pending" note.
+
+   An install starts only with at least `kOtaMinInstallMs` (60 s) left after
+   the sync's reserve: about 30 s for a 6 MB image over the LAN plus one 30 s
+   transfer stall that resumes. `esp_ota_begin` gets the offer's size, so it
+   erases only the sectors the image needs. An install is counted in NVS
+   (`ota_day`, `ota_n`) before it starts, at most `kMaxOtaInstallsPerDay` (1)
+   per routine-day. An install the time budget cancelled is reported as
+   `deferred:time` and not counted. A successful install reboots
    at once without writing `last_run`. The new image's health check runs on
    that boot, then the routine runs again, reports `installed`, syncs and
    writes `last_run`.

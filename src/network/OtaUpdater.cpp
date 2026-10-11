@@ -180,7 +180,9 @@ class DevicePort final : public xs::OtaPort {
   }
 
   bool otaBegin() override {
-    const esp_err_t err = esp_ota_begin(partition, OTA_SIZE_UNKNOWN, &handle);
+    // The offer's size: esp_ota_begin erases only the sectors the image needs,
+    // not the whole 6.4 MB slot (OTA_SIZE_UNKNOWN), inside the install budget.
+    const esp_err_t err = esp_ota_begin(partition, totalSize > 0 ? totalSize : OTA_SIZE_UNKNOWN, &handle);
     if (err != ESP_OK) {
       LOG_ERR(kTag, "esp_ota_begin failed: %s", esp_err_to_name(err));
       open = false;
