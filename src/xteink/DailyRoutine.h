@@ -172,7 +172,6 @@ class RoutinePort {
  public:
   virtual ~RoutinePort() = default;
   virtual uint32_t millis() = 0;
-  virtual bool readerOpen() = 0;
   virtual bool provisioned() = 0;  // a device key exists
   virtual int batteryPercent() = 0;
 
@@ -216,7 +215,6 @@ enum class Status : uint8_t {
   NotDue,                 // already ran this routine-day: nothing done
   Ran,                    // the sync step ran; last_run written
   Rebooting,              // a firmware image was installed; last_run not written
-  SkippedReaderOpen,      // never while the reader is open
   SkippedNotProvisioned,  // no device key: nothing to sync with
   SkippedNoClock,         // time could not be established (fail closed)
   SkippedLowBattery,      // below kDailyJoinBatteryFloor
@@ -234,7 +232,9 @@ struct Result {
   sync::Outcome sync;
 };
 
-// Runs the whole routine against `port`. Never waits on button input.
+// Runs the whole routine against `port`. Never waits on button input. The
+// only caller is setup(), before activity routing, so no book can be open
+// while it runs (there is no reader check: it could never be true there).
 Result run(RoutinePort& port, Trigger trigger);
 
 #ifdef ARDUINO

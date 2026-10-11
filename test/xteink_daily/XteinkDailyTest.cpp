@@ -67,7 +67,6 @@ bool fwOutcomeValid(const std::string& s) {
 class FakePort : public RoutinePort {
  public:
   // Inputs.
-  bool reader = false;
   bool key = true;
   int battery = 90;
   int64_t bootClock = 0;
@@ -114,7 +113,6 @@ class FakePort : public RoutinePort {
   int64_t adopted = 0;
 
   uint32_t millis() override { return now; }
-  bool readerOpen() override { return reader; }
   bool provisioned() override { return key; }
   int batteryPercent() override { return battery; }
   int64_t bootClockEpoch() override { return bootClock; }
@@ -436,13 +434,6 @@ TEST(DailyGate, OnlyPowerButtonAndPlainBoots) {
   EXPECT_FALSE(bootQualifies(BootKind::PowerButton, false, false, /*recovery=*/true));
   EXPECT_STREQ(triggerName(Trigger::PowerOn), "power_on");
   EXPECT_STREQ(triggerName(Trigger::Wake), "wake");
-}
-
-TEST(DailyGate, NeverWhileTheReaderIsOpen) {
-  FakePort p = dueDevice();
-  p.reader = true;
-  EXPECT_EQ(run(p, Trigger::PowerOn).status, Status::SkippedReaderOpen);
-  EXPECT_TRUE(p.events.empty());
 }
 
 TEST(DailyGate, NotProvisionedDoesNothing) {

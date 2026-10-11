@@ -323,8 +323,6 @@ const char* statusName(const Status s) {
       return "ran";
     case Status::Rebooting:
       return "rebooting";
-    case Status::SkippedReaderOpen:
-      return "skipped:reader-open";
     case Status::SkippedNotProvisioned:
       return "skipped:not-provisioned";
     case Status::SkippedNoClock:
@@ -346,7 +344,6 @@ class Routine {
   Routine(RoutinePort& p, const Trigger t) : port(p), trigger(t), startMs(p.millis()) {}
 
   Result run() {
-    if (port.readerOpen()) return finish(Status::SkippedReaderOpen);
     if (!port.provisioned()) return finish(Status::SkippedNotProvisioned);
     const int battery = port.batteryPercent();
 
@@ -537,7 +534,7 @@ Result run(RoutinePort& port, const Trigger trigger) { return Routine(port, trig
 #include "WifiCredentialStore.h"
 #include "WifiJoin.h"
 #include "XteinkConfig.h"
-#include "activities/Activity.h"  // ActivityManager + RenderLock
+#include "activities/Activity.h"  // RenderLock
 #include "components/UITheme.h"
 #include "network/OtaUpdater.h"
 #include "util/Timezones.h"
@@ -603,7 +600,6 @@ class DevicePort final : public RoutinePort {
   DevicePort(GfxRenderer& r, const int64_t bootClock) : renderer(r), bootClock(bootClock) {}
 
   uint32_t millis() override { return ::millis(); }
-  bool readerOpen() override { return activityManager.isReaderActivity(); }
   bool provisioned() override { return !config::getDeviceKey().empty(); }
   int batteryPercent() override { return powerManager.getBatteryPercentage(); }
 
