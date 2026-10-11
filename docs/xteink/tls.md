@@ -15,7 +15,7 @@ Plain `http://` URLs still work and carry no certificate. LAN sync to
 | Piece | Where | What it does |
 | --- | --- | --- |
 | Root bundle | `src/network/XteinkCaBundle.h` (generated) | Five PEM roots in flash, loaded by `wolfSSL_CTX_load_verify_buffer` on each connection |
-| Trust hook | `src/network/TlsTrust.cpp` `tls_trust::applyVerifiedTls()` | `SecureHttpClient::setCACert(bundle)` instead of `setInsecure()`; called from `HttpDownloader.cpp` for every connection, redirects included |
+| Trust hook | `src/network/TlsTrust.cpp` `tls_trust::applyVerifiedTls()` | `SecureHttpClient::setCACert(bundle)` instead of `setInsecure()`; called from `HttpDownloader.cpp`, `XteinkSync.cpp` and `OtaUpdater.cpp` for every connection, redirects included |
 | Hostname check | `src/network/TlsTrust.cpp` `__wrap_wolfSSL_UseSNI` + `-Wl,--wrap=wolfSSL_UseSNI` | freeink-sdk's `SecureClient` sets SNI but never calls `wolfSSL_check_domain_name()`. The link-time wrap makes the SNI host the expected certificate name. If that cannot be set, the session's I/O is cut so the handshake fails instead of continuing unchecked |
 | Clock | `tls_trust::ensureClockForTls()` | Certificate dates are checked against `time()`. Before the first HTTPS request of each boot, one bounded SNTP sync (5 s) runs so a stale clock restored by `TrustedTime` cannot reject fresh certificates. There is no fallback that skips date checks |
 | Build flags | `platformio.ini` `[base]` | `WOLFSSL_ALT_CERT_CHAINS`, `WOLFSSL_SHA384`, `WOLFSSL_SP_384` (see below) |
@@ -206,21 +206,84 @@ The fork pins it with a guard instead of changing code:
 `scripts/xteink-check-services.py`, which CI runs, fails if any of these call
 sites (soft AP, web/WebSocket/DNS servers, mDNS, the activity launches) appears
 anywhere else. It also fails if `setInsecure()` comes back into
-`HttpDownloader.cpp` or the upstream release feed comes back into
-`OtaUpdater.cpp`.
+`HttpDownloader.cpp`, `TlsTrust.cpp` or `OtaUpdater.cpp`, or if the upstream
+release feed or `api.github.com` appears in `OtaUpdater.{h,cpp}`.
 
 ## OTA source
 
-`src/network/OtaUpdater.cpp` reads
-`https://api.github.com/repos/agentculture/xteink-firmware/releases/latest`,
-built from one constant (`OTA_RELEASE_REPO`). Release assets must keep
-upstream's naming, `crosspoint-<tag>-<device>.bin` with `x3-x4` for the C3
-image, which `.github/workflows/release.yml` produces. Tags must be
-`X.Y.Z`.
+On xteink-provisioned devices the xteink server is the only update source.
+The GitHub releases source is gone from `src/network/OtaUpdater.{h,cpp}`, and
+`scripts/xteink-check-services.py` fails if `api.github.com` comes back there.
+A device without a device key has no OTA source (`NOT_PROVISIONED`); it is
+updated over USB or from the SD card.
 
-`isUpdateNewer()` parses `X.Y.Z` from both the tag and `CROSSPOINT_VERSION`.
+| Piece | Where |
+| --- | --- |
+| Offer parsing, install decision, verify-then-commit flow (no device dependencies) | `src/xteink/SyncProtocol.{h,cpp}` (`parseStatusResponse`, `decideOta`, `installOffer`), tested in `test/xteink_ota/` |
+| HTTP, NVS key, mbedTLS sha256, `esp_ota_*` calls, chip-id and board-tag checks | `src/network/OtaUpdater.cpp` (`DevicePort`, an `xteink::sync::OtaPort`) |
+
+### Offer
+
+`OtaUpdater::checkForUpdate()` sends `POST /api/device/status` with only
+`firmware_version` (`xteink-fw <CROSSPOINT_VERSION>`), so the inventory and
+`last_*` fields the sync stored are kept. It uses the sync's server order: the
+LAN URL (4 s budget), then the tunnel, with the device key and
+`X-Xteink-Protocol: 1`. The response may carry an optional offer:
+
+```json
+{"protocol": "1", "device": {"...": "..."},
+ "firmware": {"version": "1.6.5-dev-ota-9a1b2c3d", "size": 5891200,
+              "sha256": "<64 hex>", "url": "/api/device/firmware/3"}}
+```
+
+- An absent or `null` `firmware` field means no offer (`none`). An issue-1
+  server never sends one, so new firmware against an old server reports
+  `none` and the books still sync.
+- A malformed offer (missing field, size of 0 or less, sha256 that is not 64
+  hex, or a URL that is not a root-relative path) is also treated as `none`.
+- A response body that is not a JSON object is `EPARSE`.
+
+### Decision
+
+The offer decides, not version ordering: `isUpdateNewer()` no longer compares
+`X.Y.Z`. Every fork build shares upstream's base version, so dev builds differ
+only in their `-dev-<branch>-<sha>` suffix.
+
+| Decision | When | Result |
+| --- | --- | --- |
+| `none` | No offer | Nothing to do |
+| `current` | `offer.version` equals `CROSSPOINT_VERSION` (a leading `xteink-fw` prefix is ignored on either side) | No-op |
+| `install` | Any other version, older builds included | Installed |
+| `deferred:tunnel` | The offer came from the tunnel origin and `XTEINK_OTA_TUNNEL` is 0 | Not installed, reported as deferred |
+
+`XTEINK_OTA_TUNNEL` defaults to 0 (decision c32). A 6 MB TLS download has not
+been proven on the X3, so only an offer from the LAN origin is installed. The
+tunnel is still asked for the offer, so a pending update can be shown. Enable
+it with `-DXTEINK_OTA_TUNNEL=1` once a hardware run proves the download.
+
+### Install
+
+The image is fetched from the offer's `url`, resolved against the origin that
+answered the status call. The device key is sent only while the request stays
+on that origin. The body streams through freeink `fetchResumable`:
+
+1. `esp_ota_begin` on the inactive slot.
+2. For each chunk: the chip-id check (header offset 12) and the board-tag
+   scan, then `esp_ota_write`, then the sha256 update over the written bytes.
+   A body longer than `size` stops the transfer.
+3. If the server ignores a `Range` resume and restarts the body, the slot is
+   aborted and begun again, and the hash restarts.
+4. A non-2xx status, an incomplete body, a byte count other than `size`, or a
+   sha256 other than the offer's ends in `esp_ota_abort`.
+   `esp_ota_set_boot_partition` is never called on these paths.
+5. Otherwise `esp_ota_end` validates the ESP image, and only then is
+   `esp_ota_set_boot_partition` called.
+
+Error codes (`OtaUpdater::getLastError()`, `errorCode()`) reuse the sync's
+codes: `ESHA` (sha256 mismatch), `EDL` (truncated or oversized), `ENET`,
+`E401`, `EHTTP`, `ELOWMEM`, plus `EDEV` (image for another chip or board) and
+`EFLASH` (an `esp_ota_*` call failed).
+
 Release envs set `CROSSPOINT_VERSION` to `[crosspoint] version` from
 `platformio.ini`. Dev builds get `<version>-dev-<branch>-<sha>` from
-`scripts/git_branch.py`. A tag or version that does not parse as three
-integers is now never treated as newer. Upstream read uninitialized integers
-in that case.
+`scripts/git_branch.py`.

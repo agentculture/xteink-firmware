@@ -6,6 +6,7 @@
 // (test/xteink_sync). The device half is XteinkSync.cpp.
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -40,6 +41,8 @@ enum class Error : uint8_t {
   Hash,          // ESHA: downloaded bytes did not match the queued sha256
   Download,      // EDL: download did not complete
   Cancelled,     // ECANCEL: stopped by the user or the time budget
+  WrongDevice,   // EDEV: firmware image built for another chip or board
+  Flash,         // EFLASH: OTA partition begin/write/end/boot switch failed
 };
 
 const char* errorCode(Error e);
@@ -202,5 +205,104 @@ struct StatusTemplates {
 // Writes the one-line status into buf. Returns false (buf = "") when there is
 // nothing to show (never synced).
 bool formatStatusLine(const LastResult& r, const StatusTemplates& t, char* buf, size_t len);
+
+// --- firmware offer (OTA from the xteink server) ---------------------------
+//
+// The POST /api/device/status response may carry an optional offer:
+//   "firmware": {"version": str, "size": int, "sha256": hex, "url": "/api/..."}
+// Absent or null means no offer ("none"); an issue-1 server never sends one.
+// The install decision belongs to the offer: any build other than the running
+// one is installed, older builds included (no version ordering).
+
+constexpr size_t kMaxStatusResponse = 8 * 1024;
+constexpr size_t kMaxFirmwareVersionLen = 96;
+
+struct FirmwareOffer {
+  bool present = false;
+  std::string version;
+  int64_t size = 0;
+  std::string sha256;  // lowercase hex
+  std::string url;     // root-relative path on the origin that answered
+};
+
+// Parses a POST /api/device/status response body. False when the body is not
+// a JSON object (EPARSE). A missing, null or malformed "firmware" field is not
+// an error: `offer.present` stays false.
+bool parseStatusResponse(const char* json, size_t len, FirmwareOffer& offer);
+
+// Status body for an offer check: only firmware_version. Every status field is
+// optional, so the stored inventory, last_error and last_sync_result are kept.
+std::string buildFirmwareCheckJson(const std::string& firmwareVersion);
+
+// Offered and running versions name the same build. A "xteink-fw " prefix (the
+// form the status report sends) is ignored on either side.
+bool sameFirmwareVersion(const std::string& offered, const std::string& running);
+
+enum class OtaDecision : uint8_t {
+  None,      // no offer
+  Current,   // the offer names the running build: nothing to do
+  Install,   // the offer names another build (newer or older)
+  Deferred,  // only reachable over the tunnel, and tunnel OTA is off
+};
+
+// "none", "current", "install", "deferred:tunnel".
+const char* otaDecisionName(OtaDecision d);
+
+// viaTunnel: the offer came from the tunnel origin (not the LAN one).
+// tunnelOtaEnabled: the XTEINK_OTA_TUNNEL build flag (decision c32).
+OtaDecision decideOta(const FirmwareOffer& offer, const std::string& runningVersion, bool viaTunnel,
+                      bool tunnelOtaEnabled);
+
+// True when `origin` is the LAN origin serverOrder() derives from `lanUrl`
+// (kDefaultLanUrl when empty).
+bool isLanOrigin(const std::string& origin, const std::string& lanUrl);
+
+// Seam between the install control flow below and the device: HTTP, the
+// ESP-IDF OTA partition calls, sha256, and the chip-id/board-tag checks. The
+// device implementation lives in src/network/OtaUpdater.cpp; host tests fake
+// it and count calls.
+struct OtaFetchResult {
+  int status = -1;        // HTTP status; -1 on transport failure
+  bool complete = false;  // the whole body arrived
+  bool aborted = false;   // cancelled by the caller
+};
+
+struct OtaSink {
+  // Body bytes in order. Return false to stop the transfer.
+  std::function<bool(const uint8_t* data, size_t len)> write;
+  // The server restarted the body from byte 0 (ignored a Range resume): start
+  // over. Return false to stop the transfer.
+  std::function<bool()> rewind;
+};
+
+class OtaPort {
+ public:
+  virtual ~OtaPort() = default;
+  // GET the offer's image, streaming the body into `sink`.
+  virtual OtaFetchResult fetch(const OtaSink& sink) = 0;
+  virtual bool otaBegin() = 0;                                 // esp_ota_begin (inactive slot)
+  virtual bool otaWrite(const uint8_t* data, size_t len) = 0;  // esp_ota_write
+  virtual bool otaEnd() = 0;                                   // esp_ota_end (ESP image check)
+  virtual void otaAbort() = 0;                                 // esp_ota_abort
+  virtual bool setBootPartition() = 0;                         // esp_ota_set_boot_partition
+  virtual void hashReset() = 0;
+  virtual void hashUpdate(const uint8_t* data, size_t len) = 0;
+  virtual std::string hashHex() = 0;
+  // Device identity over the stream (chip id, board tag). feed() returns false
+  // once the image is known to be for another device.
+  virtual void guardReset() = 0;
+  virtual bool guardFeed(const uint8_t* data, size_t len) = 0;
+  virtual void progress(size_t written, size_t total) {
+    (void)written;
+    (void)total;
+  }
+};
+
+// Streams the offered image into the inactive OTA slot, hashing exactly the
+// bytes written, and switches the boot partition only when the size and the
+// sha256 match the offer and esp_ota_end accepted the image. Any failure aborts
+// the slot, so the running firmware stays the boot target. Returns the error
+// code to record (Error::None on success).
+Error installOffer(const FirmwareOffer& offer, OtaPort& port);
 
 }  // namespace xteink::sync
