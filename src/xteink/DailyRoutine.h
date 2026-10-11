@@ -57,8 +57,14 @@ constexpr const char* kDefaultRoutineTz = "IST-2IDT,M3.4.4/26,M10.5.0";
 constexpr uint32_t kJoinBudgetMs = 20000;      // unattended Wi-Fi join
 constexpr uint32_t kClockSyncBudgetMs = 8000;  // SNTP when the clock is not trusted
 constexpr uint32_t kSyncReserveMs = 35000;     // kept for the book sync after OTA work
-constexpr uint32_t kOtaMinInstallMs = 20000;   // an install with less time left is deferred
-constexpr uint32_t kSyncTailMs = 10000;        // no new download starts in the last 10 s
+// An install with less time left is deferred. A ~6 MB image over the LAN
+// costs roughly 30 s when nothing goes wrong (erasing the image's sectors,
+// streaming it, writing it); the transfer's per-phase timeout
+// (kTransferTimeoutMs in OtaUpdater.cpp) is another 30 s, so a single stall
+// that resumes can still finish. With a typical join and check, the cap less
+// kSyncReserveMs leaves about 65 s.
+constexpr uint32_t kOtaMinInstallMs = 60000;
+constexpr uint32_t kSyncTailMs = 10000;  // no new download starts in the last 10 s
 
 // Below this the clock was obviously never set (2025-01-01 UTC); the same
 // floor TrustedTime uses.
@@ -87,9 +93,16 @@ const char* triggerName(Trigger t);
 const char* routineTimezone(bool timezoneChosen, const char* clockTz);
 
 // The most recent local kRunHourLocal:00 at or before nowUtc under posixTz,
-// as a UTC epoch; -1 when it cannot be computed. Uses the C library's TZ
-// machinery (setenv/tzset/mktime), restoring the previous TZ afterwards.
+// as a UTC epoch; -1 when it cannot be computed (no clock, or a rule that does
+// not parse). The rule is evaluated by hand: the process-wide TZ variable is
+// never touched, because the render task formats the clock under it.
 int64_t mostRecentBoundary(int64_t nowUtc, const char* posixTz, int hour = kRunHourLocal);
+
+// The UTC offset (seconds east of UTC) a POSIX TZ rule ("IST-2IDT,M3.4.4/26,
+// M10.5.0", "UTC+05:30", "<+03>-3") puts in force at `utc`. Supports the
+// Mm.w.d, Jn and n date forms and rule times from -167 to 167 hours. False when
+// the rule does not parse.
+bool utcOffsetAt(const char* posixTz, int64_t utc, int32_t& offsetSecs);
 
 // The routine is due when lastRun is earlier than the most recent boundary
 // (or is corrupt: far in the future). lastRun <= 0 = never ran.
@@ -136,6 +149,8 @@ constexpr const char* kFwDeferredTunnel = "deferred:tunnel";
 constexpr const char* kFwDeferredBattery = "deferred:battery";
 constexpr const char* kFwDeferredDailyCap = "deferred:daily_cap";
 constexpr const char* kFwDeferredTime = "deferred:time";
+// The offer names a build this device already rolled back from (rb_list).
+constexpr const char* kFwDeferredRolledBack = "deferred:rolled_back";
 std::string fwFailed(sync::Error e);  // "failed:<code>"
 
 // Persistent note for the Home status line.
@@ -165,7 +180,6 @@ class RoutinePort {
  public:
   virtual ~RoutinePort() = default;
   virtual uint32_t millis() = 0;
-  virtual bool readerOpen() = 0;
   virtual bool provisioned() = 0;  // a device key exists
   virtual int batteryPercent() = 0;
 
@@ -191,10 +205,12 @@ class RoutinePort {
   virtual void setOtaDay(int64_t boundary) = 0;
   virtual uint8_t otaCount() = 0;  // "ota_n": install attempts on that day
   virtual void setOtaCount(uint8_t n) = 0;
+  virtual Note note() = 0;              // "dr_note"
   virtual void setNote(Note note) = 0;  // "dr_note"
 
   // OTA (OtaUpdater) and the book sync (XteinkSync::run).
-  virtual OtaCheck checkOta() = 0;
+  // One status POST for the offer, bounded by budgetMs (both origins).
+  virtual OtaCheck checkOta(uint32_t budgetMs) = 0;
   // Installs the checked offer within budgetMs; Error::None = the boot
   // partition now points at the new image.
   virtual sync::Error installOta(uint32_t budgetMs) = 0;
@@ -209,7 +225,6 @@ enum class Status : uint8_t {
   NotDue,                 // already ran this routine-day: nothing done
   Ran,                    // the sync step ran; last_run written
   Rebooting,              // a firmware image was installed; last_run not written
-  SkippedReaderOpen,      // never while the reader is open
   SkippedNotProvisioned,  // no device key: nothing to sync with
   SkippedNoClock,         // time could not be established (fail closed)
   SkippedLowBattery,      // below kDailyJoinBatteryFloor
@@ -227,7 +242,9 @@ struct Result {
   sync::Outcome sync;
 };
 
-// Runs the whole routine against `port`. Never waits on button input.
+// Runs the whole routine against `port`. Never waits on button input. The
+// only caller is setup(), before activity routing, so no book can be open
+// while it runs (there is no reader check: it could never be true there).
 Result run(RoutinePort& port, Trigger trigger);
 
 #ifdef ARDUINO

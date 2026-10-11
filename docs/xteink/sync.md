@@ -137,7 +137,9 @@ measurement. The client checks heap before every connection:
 - http needs 16 KB free and an 8 KB largest block.
 
 Below that, the server is skipped. If no server is left, the sync fails with
-`ELOWMEM`.
+`ELOWMEM`. Before each download the 4 KB SD staging block is allocated first
+and the check runs after it, so the floor applies to what the connection
+actually gets.
 
 These steps reduce peak heap:
 
@@ -156,7 +158,13 @@ The manual path also reboots onto a fresh heap first.
 before Home or a resumed book opens. It runs only on power-button and plain
 boots: never after USB power, a flash, a silent heap-defrag reboot, a panic
 reboot, or in recovery mode. It never waits for a button. Progress shows as a
-non-blocking popup.
+non-blocking popup. The routine's only caller is `setup()`, before activity
+routing, so no book is ever open while it runs.
+
+On the first boot of a new image, a passed health check leaves Wi-Fi up and
+hands its status answer to the routine: the routine skips its own join and
+firmware status POST and uses that offer. `daily::onBoot()` turns the radio
+off when it returns, whether or not the routine ran.
 
 1. **Clock.** The clock is checked on every start. The system clock as it came
    up (before TrustedTime restored its floor) is trusted when it is plausible:
@@ -179,14 +187,23 @@ non-blocking popup.
    | No offer, or the offer is the running build | `none` |
    | First routine after an install today (the health check passed) | `installed` |
    | Offer reachable only over the tunnel | `deferred:tunnel` |
+   | Offer names a build this device rolled back from (`docs/xteink/tls.md`) | `deferred:rolled_back` |
    | Offer, battery below `kDailyOtaBatteryFloor` (40 %) | `deferred:battery` |
    | Offer again after today's install (no reboot loop) | `deferred:daily_cap` |
-   | Not enough time left under the cap | `deferred:time` |
+   | Not enough time left under the cap, or the install ran out of it | `deferred:time` |
    | Check or install failed | `failed:<code>`, for example `failed:EDL`, `failed:ESHA` |
 
-   A deferred offer shows "Update pending" on Home. An install is counted in
-   NVS (`ota_day`, `ota_n`) before it starts, at most
-   `kMaxOtaInstallsPerDay` (1) per routine-day. A successful install reboots
+   A deferred offer, or one whose install failed, shows "Update pending" on
+   Home. A step that learns nothing about the offer (the check failed, or
+   there was no time to check) keeps an earlier "Update pending" note.
+
+   An install starts only with at least `kOtaMinInstallMs` (60 s) left after
+   the sync's reserve: about 30 s for a 6 MB image over the LAN plus one 30 s
+   transfer stall that resumes. `esp_ota_begin` gets the offer's size, so it
+   erases only the sectors the image needs. An install is counted in NVS
+   (`ota_day`, `ota_n`) before it starts, at most `kMaxOtaInstallsPerDay` (1)
+   per routine-day. An install the time budget cancelled is reported as
+   `deferred:time` and not counted. A successful install reboots
    at once without writing `last_run`. The new image's health check runs on
    that boot, then the routine runs again, reports `installed`, syncs and
    writes `last_run`.

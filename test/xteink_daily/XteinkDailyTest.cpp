@@ -67,7 +67,6 @@ bool fwOutcomeValid(const std::string& s) {
 class FakePort : public RoutinePort {
  public:
   // Inputs.
-  bool reader = false;
   bool key = true;
   int battery = 90;
   int64_t bootClock = 0;
@@ -87,6 +86,7 @@ class FakePort : public RoutinePort {
   uint32_t syncCostMs = 20000;
   // false: the join overruns its budget (a misbehaving radio).
   bool joinHonorsBudget = true;
+  bool checkHonorsBudget = true;
 
   // State (NVS and radio).
   uint32_t now = 0xFFFFF000u;  // near the 49-day wrap on purpose
@@ -94,7 +94,7 @@ class FakePort : public RoutinePort {
   int64_t lastRunValue = 0;
   int64_t otaDayValue = 0;
   uint8_t otaCountValue = 0;
-  Note note = Note::None;
+  Note savedNote = Note::None;
   bool rebooted = false;
 
   // Observations.
@@ -106,6 +106,7 @@ class FakePort : public RoutinePort {
   int sntpCalls = 0;
   int setLastRunCalls = 0;
   uint32_t lastInstallBudget = 0;
+  uint32_t lastCheckBudget = 0;
   uint32_t lastItemBudget = 0;
   uint32_t lastHardBudget = 0;
   uint32_t syncStartedAtElapsed = 0;
@@ -114,7 +115,6 @@ class FakePort : public RoutinePort {
   int64_t adopted = 0;
 
   uint32_t millis() override { return now; }
-  bool readerOpen() override { return reader; }
   bool provisioned() override { return key; }
   int batteryPercent() override { return battery; }
   int64_t bootClockEpoch() override { return bootClock; }
@@ -154,12 +154,18 @@ class FakePort : public RoutinePort {
   void setOtaDay(const int64_t b) override { otaDayValue = b; }
   uint8_t otaCount() override { return otaCountValue; }
   void setOtaCount(const uint8_t n) override { otaCountValue = n; }
-  void setNote(const Note n) override { note = n; }
-  OtaCheck checkOta() override {
+  Note note() override { return savedNote; }
+  void setNote(const Note n) override { savedNote = n; }
+  OtaCheck checkOta(const uint32_t budgetMs) override {
     ++checkCalls;
+    lastCheckBudget = budgetMs;
     events.push_back("check");
-    now += checkCostMs;
-    return ota;
+    if (checkCostMs < budgetMs || !checkHonorsBudget) {
+      now += checkCostMs;
+      return ota;
+    }
+    now += budgetMs;  // the deadline cut the POST off: no answer
+    return {sync::OtaDecision::None, sync::Error::Network};
   }
   sync::Error installOta(const uint32_t budgetMs) override {
     ++installCalls;
@@ -301,7 +307,8 @@ INSTANTIATE_TEST_SUITE_P(Jerusalem, DailyDstTest,
                            return "d" + n;
                          });
 
-TEST(DailyBoundary, RestoresTheProcessTimezone) {
+TEST(DailyBoundary, NeverTouchesTheProcessTimezone) {
+  // The render task formats the clock under TZ while setup() runs the routine.
   setenv("TZ", "UTC0", 1);
   tzset();
   mostRecentBoundary(utc(2026, 10, 11, 12), kJerusalem);
@@ -311,6 +318,111 @@ TEST(DailyBoundary, RestoresTheProcessTimezone) {
   tzset();
   mostRecentBoundary(utc(2026, 10, 11, 12), kJerusalem);
   EXPECT_EQ(getenv("TZ"), nullptr);
+}
+
+// Every rule the clock settings ship (src/util/Timezones.cpp), plus forms the
+// C library accepts that the table does not use.
+const char* const kShippedZones[] = {
+    "ACST-9:30ACDT,M10.1.0,M4.1.0/3",
+    "AEST-10AEDT,M10.1.0,M4.1.0/3",
+    "AKST9AKDT,M3.2.0,M11.1.0",
+    "AST4ADT,M3.2.0,M11.1.0",
+    "AZOT1AZOST,M3.5.0/0,M10.5.0/1",
+    "CET-1CEST,M3.5.0,M10.5.0/3",
+    "CLT4CLST,M9.1.6/24,M4.1.6/24",
+    "CST6CDT,M3.2.0,M11.1.0",
+    "EET-2EEST,M3.5.0/3,M10.5.0/4",
+    "EET-2EEST,M4.5.5/0,M10.5.4/24",
+    "EST5EDT,M3.2.0,M11.1.0",
+    "GMT0BST,M3.5.0/1,M10.5.0",
+    "IST-2IDT,M3.4.4/26,M10.5.0",
+    "MST7MDT,M3.2.0,M11.1.0",
+    "NST3:30NDT,M3.2.0,M11.1.0",
+    "NZST-12NZDT,M9.5.0,M4.1.0/3",
+    "PST8PDT,M3.2.0,M11.1.0",
+    "ACST-9:30",
+    "AFT-4:30",
+    "IST-5:30",
+    "NPT-5:45",
+    "LINT-14",
+    "HST10",
+    "UTC0",
+    "UTC+05:30",
+    "UTC-05:45",
+    "UTC-0:30",
+    "<+03>-3",
+    "EST5EDT",
+    "XST-1XDT-3,J60/1,300/-1",
+};
+
+int32_t libcOffset(const char* tz, const int64_t epoch) {
+  setenv("TZ", tz, 1);
+  tzset();
+  const auto t = static_cast<time_t>(epoch);
+  struct tm tm{};
+  localtime_r(&t, &tm);
+  return static_cast<int32_t>(tm.tm_gmtoff);
+}
+
+// The old implementation: mktime() under the rule.
+int64_t libcBoundary(const char* tz, const int64_t nowUtc, const int hour) {
+  setenv("TZ", tz, 1);
+  tzset();
+  const auto at = [](const time_t t, const int dayOffset, const int h) {
+    struct tm tm{};
+    localtime_r(&t, &tm);
+    tm.tm_mday += dayOffset;
+    tm.tm_hour = h;
+    tm.tm_min = tm.tm_sec = 0;
+    tm.tm_isdst = -1;
+    return static_cast<int64_t>(mktime(&tm));
+  };
+  int64_t b = at(static_cast<time_t>(nowUtc), 0, hour);
+  if (b > nowUtc) b = at(static_cast<time_t>(nowUtc), -1, hour);
+  return b;
+}
+
+TEST(DailyBoundary, OffsetsMatchTheCLibraryForEveryShippedZone) {
+  for (const char* tz : kShippedZones) {
+    int failures = 0;
+    for (int64_t t = utc(2025, 12, 1); t < utc(2028, 2, 1) && failures < 3; t += 15 * 60) {
+      int32_t mine = 0;
+      ASSERT_TRUE(utcOffsetAt(tz, t, mine)) << tz;
+      const int32_t want = libcOffset(tz, t);
+      if (mine != want) {
+        ++failures;
+        ADD_FAILURE() << tz << " at " << t << ": " << mine << " != " << want;
+      }
+    }
+  }
+  unsetenv("TZ");
+  tzset();
+}
+
+TEST(DailyBoundary, BoundaryMatchesTheCLibraryForEveryShippedZone) {
+  for (const char* tz : kShippedZones) {
+    int failures = 0;
+    for (int64_t t = utc(2026, 1, 1, 0, 7); t < utc(2028, 1, 1) && failures < 3; t += 5 * kHour + 13 * 60) {
+      const int64_t mine = mostRecentBoundary(t, tz);
+      const int64_t want = libcBoundary(tz, t, kRunHourLocal);
+      if (mine != want) {
+        ++failures;
+        ADD_FAILURE() << tz << " at " << t << ": " << mine << " != " << want;
+      }
+    }
+  }
+  unsetenv("TZ");
+  tzset();
+}
+
+TEST(DailyBoundary, RulesThatDoNotParseAreRejected) {
+  int32_t off = 0;
+  for (const char* tz :
+       {"", "X", "IST-2IDT,M3.4.4", "IST-2IDT,M13.1.0,M10.5.0", "IST-99", "CET-1CEST,M3.5.0,M10.5.0/3x", "<+03-3"}) {
+    EXPECT_FALSE(utcOffsetAt(tz, utc(2026, 6, 1), off)) << tz;
+    EXPECT_EQ(mostRecentBoundary(utc(2026, 6, 1), tz), -1) << tz;
+  }
+  EXPECT_FALSE(utcOffsetAt(nullptr, utc(2026, 6, 1), off));
 }
 
 TEST(DailyBoundary, RejectsUnusableInput) {
@@ -350,13 +462,6 @@ TEST(DailyGate, OnlyPowerButtonAndPlainBoots) {
   EXPECT_FALSE(bootQualifies(BootKind::PowerButton, false, false, /*recovery=*/true));
   EXPECT_STREQ(triggerName(Trigger::PowerOn), "power_on");
   EXPECT_STREQ(triggerName(Trigger::Wake), "wake");
-}
-
-TEST(DailyGate, NeverWhileTheReaderIsOpen) {
-  FakePort p = dueDevice();
-  p.reader = true;
-  EXPECT_EQ(run(p, Trigger::PowerOn).status, Status::SkippedReaderOpen);
-  EXPECT_TRUE(p.events.empty());
 }
 
 TEST(DailyGate, NotProvisionedDoesNothing) {
@@ -473,13 +578,13 @@ TEST(DailyBattery, BelowTheJoinFloorSkipsEverything) {
   EXPECT_EQ(p.joinCalls, 0);
   EXPECT_EQ(p.syncCalls, 0);
   EXPECT_EQ(p.setLastRunCalls, 0);  // a charged start later today still runs
-  EXPECT_EQ(p.note, Note::LowBattery);
+  EXPECT_EQ(p.savedNote, Note::LowBattery);
 
   // Charged later the same day: it runs and the note is replaced.
   p.nextBoot(p.systemClock + 2 * kHour);
   p.battery = 80;
   EXPECT_EQ(run(p, Trigger::PowerOn).status, Status::Ran);
-  EXPECT_EQ(p.note, Note::None);
+  EXPECT_EQ(p.savedNote, Note::None);
 }
 
 TEST(DailyBattery, FloorsAreOrdered) {
@@ -516,7 +621,7 @@ TEST_P(DailyFirmwareBranchTest, SyncStillRunsInTheSameStartWithTheMatchingOutcom
   EXPECT_EQ(p.syncFields.fwOutcome, b.fwOutcome) << b.name;
   EXPECT_EQ(r.fields.fwOutcome, b.fwOutcome) << b.name;
   EXPECT_TRUE(fwOutcomeValid(r.fields.fwOutcome)) << b.name;
-  EXPECT_EQ(p.note, b.note) << b.name;
+  EXPECT_EQ(p.savedNote, b.note) << b.name;
   EXPECT_EQ(p.setLastRunCalls, 1) << b.name;
 
   // Order: firmware first, then the books, then last_run.
@@ -563,20 +668,28 @@ INSTANTIATE_TEST_SUITE_P(
                  sync::Error::Download,
                  "failed:EDL",
                  1,
-                 Note::None},
+                 Note::FirmwarePending},
         FwBranch{"sha_mismatch",
                  {sync::OtaDecision::Install, sync::Error::None},
                  90,
                  sync::Error::Hash,
                  "failed:ESHA",
                  1,
-                 Note::None},
+                 Note::FirmwarePending},
         // Needs a human: the offer is only reachable over the tunnel.
         FwBranch{"needs_human_tunnel",
                  {sync::OtaDecision::Deferred, sync::Error::None},
                  90,
                  sync::Error::None,
                  "deferred:tunnel",
+                 0,
+                 Note::FirmwarePending},
+        // The offer names a build this device rolled back from: never again.
+        FwBranch{"rolled_back",
+                 {sync::OtaDecision::RolledBack, sync::Error::None},
+                 90,
+                 sync::Error::None,
+                 "deferred:rolled_back",
                  0,
                  Note::FirmwarePending},
         FwBranch{"check_failed",
@@ -587,6 +700,56 @@ INSTANTIATE_TEST_SUITE_P(
                  0,
                  Note::None}),
     [](const auto& info) { return std::string(info.param.name); });
+
+// --- the Home note follows the offer -------------------------------------------------
+
+TEST(DailyNote, AFailedCheckKeepsAnEarlierPendingNote) {
+  // Yesterday the offer was deferred; today the check itself fails. The offer
+  // may still be outstanding, so Home keeps "Update pending".
+  FakePort p = dueDevice();
+  p.savedNote = Note::FirmwarePending;
+  p.ota = {sync::OtaDecision::None, sync::Error::Network};
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(r.status, Status::Ran);
+  EXPECT_EQ(r.fields.fwOutcome, "failed:ENET");
+  EXPECT_EQ(p.savedNote, Note::FirmwarePending);
+}
+
+TEST(DailyNote, AFailedCheckClearsAStaleLowBatteryNote) {
+  FakePort p = dueDevice();
+  p.savedNote = Note::LowBattery;
+  p.ota = {sync::OtaDecision::None, sync::Error::Network};
+  EXPECT_EQ(run(p, Trigger::PowerOn).status, Status::Ran);
+  EXPECT_EQ(p.savedNote, Note::None);
+}
+
+TEST(DailyNote, AFailedInstallLeavesTheOfferPending) {
+  FakePort p = dueDevice();
+  p.ota = {sync::OtaDecision::Install, sync::Error::None};
+  p.installResult = sync::Error::Download;
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(r.fields.fwOutcome, "failed:EDL");
+  EXPECT_EQ(p.savedNote, Note::FirmwarePending);
+}
+
+TEST(DailyNote, NoTimeForTheCheckKeepsAPendingNote) {
+  FakePort p = dueDevice();
+  p.savedNote = Note::FirmwarePending;
+  p.joinHonorsBudget = false;
+  p.joinCostMs = kDailyRoutineCapMs - kSyncReserveMs;
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(p.checkCalls, 0);
+  EXPECT_EQ(r.fields.fwOutcome, "deferred:time");
+  EXPECT_EQ(p.savedNote, Note::FirmwarePending);
+}
+
+TEST(DailyNote, AnAnswerWithoutAnOfferClearsThePendingNote) {
+  FakePort p = dueDevice();
+  p.savedNote = Note::FirmwarePending;
+  p.ota = {sync::OtaDecision::None, sync::Error::None};
+  EXPECT_EQ(run(p, Trigger::PowerOn).status, Status::Ran);
+  EXPECT_EQ(p.savedNote, Note::None);
+}
 
 // --- install, reboot, health check, no loop ----------------------------------------------
 
@@ -618,6 +781,21 @@ TEST(DailyOta, InstallRebootsWithoutLastRunThenReportsInstalled) {
   EXPECT_EQ(run(p, Trigger::PowerOn).status, Status::NotDue);
 }
 
+TEST(DailyOta, AStationLeftUpByThePassedHealthCheckIsReusedThenReleased) {
+  // The new image's health check joined Wi-Fi and kept it up for the routine:
+  // no second join, and the routine still turns the radio off at the end.
+  FakePort p = dueDevice();
+  p.connected = true;
+  p.otaCountValue = 1;
+  p.otaDayValue = mostRecentBoundary(p.systemClock, kJerusalem);
+  p.ota = {sync::OtaDecision::Current, sync::Error::None};
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(r.status, Status::Ran);
+  EXPECT_EQ(r.fields.fwOutcome, "installed");
+  EXPECT_EQ(p.joinCalls, 0);
+  EXPECT_FALSE(p.connected);
+}
+
 TEST(DailyOta, AnOfferThatKeepsComingBackCannotLoop) {
   FakePort p = dueDevice();
   p.ota = {sync::OtaDecision::Install, sync::Error::None};
@@ -631,7 +809,7 @@ TEST(DailyOta, AnOfferThatKeepsComingBackCannotLoop) {
   EXPECT_EQ(p.installCalls, 0);
   EXPECT_FALSE(p.rebooted);
   EXPECT_EQ(r.fields.fwOutcome, "deferred:daily_cap");
-  EXPECT_EQ(p.note, Note::FirmwarePending);
+  EXPECT_EQ(p.savedNote, Note::FirmwarePending);
   EXPECT_EQ(p.syncCalls, 1);
 
   // Next routine-day it may try once more.
@@ -667,6 +845,49 @@ TEST(DailyCap, NoTimeForAnInstallDefersItAndStillSyncs) {
   EXPECT_EQ(p.syncCalls, 1);
 }
 
+TEST(DailyCap, AnInstallStartsOnlyWithARealisticBudget) {
+  // 20 s used to be enough to start: esp_ota_begin then erased the slot and the
+  // transfer was cancelled long before 6 MB arrived.
+  static_assert(kOtaMinInstallMs >= 60000, "a 6 MB LAN install plus one stall needs >= 60 s");
+  static_assert(kDailyRoutineCapMs - kSyncReserveMs - kJoinBudgetMs / 4 >= kOtaMinInstallMs,
+                "a typical join and check must leave room for an install");
+  FakePort p = dueDevice();
+  p.ota = {sync::OtaDecision::Install, sync::Error::None};
+  p.joinCostMs = 3000;
+  p.checkCostMs = 1000;
+  EXPECT_EQ(run(p, Trigger::PowerOn).status, Status::Rebooting);
+  EXPECT_GE(p.lastInstallBudget, kOtaMinInstallMs);
+
+  // A slow join leaves less than the minimum: deferred, the day's attempt kept.
+  FakePort slow = dueDevice();
+  slow.ota = {sync::OtaDecision::Install, sync::Error::None};
+  slow.joinCostMs = 12000;
+  const Result r = run(slow, Trigger::PowerOn);
+  EXPECT_EQ(r.fields.fwOutcome, "deferred:time");
+  EXPECT_EQ(slow.installCalls, 0);
+  EXPECT_EQ(slow.otaCountValue, 0);
+}
+
+TEST(DailyCap, ABudgetCancelledInstallDoesNotUseUpTheDay) {
+  FakePort p = dueDevice();
+  p.ota = {sync::OtaDecision::Install, sync::Error::None};
+  p.installResult = sync::Error::Cancelled;
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(r.status, Status::Ran);
+  EXPECT_EQ(p.installCalls, 1);
+  EXPECT_EQ(r.fields.fwOutcome, "deferred:time");
+  EXPECT_EQ(p.savedNote, Note::FirmwarePending);
+  EXPECT_EQ(p.otaCountValue, 0);
+  EXPECT_EQ(p.syncCalls, 1);
+
+  // A real failure still counts (a crash mid-install must not loop).
+  FakePort q = dueDevice();
+  q.ota = {sync::OtaDecision::Install, sync::Error::None};
+  q.installResult = sync::Error::Hash;
+  run(q, Trigger::PowerOn);
+  EXPECT_EQ(q.otaCountValue, 1);
+}
+
 TEST(DailyCap, NoTimeForTheCheckSkipsItAndStillSyncs) {
   FakePort p = dueDevice();
   p.joinHonorsBudget = false;
@@ -676,6 +897,19 @@ TEST(DailyCap, NoTimeForTheCheckSkipsItAndStillSyncs) {
   EXPECT_EQ(p.checkCalls, 0);
   EXPECT_EQ(r.fields.fwOutcome, "deferred:time");
   EXPECT_EQ(p.syncCalls, 1);
+}
+
+TEST(DailyCap, TheCheckIsBoundedByTheCap) {
+  // A tunnel status POST with no deadline could hold the routine past its cap.
+  FakePort p = dueDevice();
+  p.checkCostMs = 1000000;  // a peer that never answers
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(r.status, Status::Ran);
+  EXPECT_GT(p.lastCheckBudget, 0u);
+  EXPECT_LE(p.lastCheckBudget, kDailyRoutineCapMs - kSyncReserveMs);
+  EXPECT_EQ(r.fields.fwOutcome, "failed:ENET");
+  EXPECT_GE(p.lastHardBudget, kSyncReserveMs - 1000);  // the sync kept its reserve
+  EXPECT_LE(p.now - p.startMs, kDailyRoutineCapMs);
 }
 
 TEST(DailyCap, JoinIsBoundedByItsBudget) {
@@ -702,8 +936,8 @@ TEST(DailyFormat, ContentOutcome) {
 }
 
 TEST(DailyFormat, FwOutcomeStringsMatchTheServerPattern) {
-  for (const char* s :
-       {kFwNone, kFwInstalled, kFwDeferredTunnel, kFwDeferredBattery, kFwDeferredDailyCap, kFwDeferredTime}) {
+  for (const char* s : {kFwNone, kFwInstalled, kFwDeferredTunnel, kFwDeferredBattery, kFwDeferredDailyCap,
+                        kFwDeferredTime, kFwDeferredRolledBack, sync::otaDecisionName(sync::OtaDecision::RolledBack)}) {
     EXPECT_TRUE(fwOutcomeValid(s)) << s;
   }
   for (const auto e : {sync::Error::Network, sync::Error::Download, sync::Error::Hash, sync::Error::Flash,

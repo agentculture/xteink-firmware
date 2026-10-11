@@ -253,20 +253,43 @@ std::string buildFirmwareCheckJson(const std::string& firmwareVersion, const std
 // form the status report sends) is ignored on either side.
 bool sameFirmwareVersion(const std::string& offered, const std::string& running);
 
+// `version` in the status report's form: "xteink-fw <version>" (an existing
+// prefix is not doubled).
+std::string firmwareReportVersion(const std::string& version);
+
+// --- builds this device rolled back from -----------------------------------
+//
+// A persistent device-side record (NVS "rb_list") of the last few builds whose
+// post-update health check failed or that the bootloader aborted. Unlike
+// rolled_back_version (cleared once a status POST carried it), it is never
+// cleared by the server, so an offer naming such a build is never installed
+// again unattended. Stored as the versions in report form, newest first, one
+// per line.
+constexpr size_t kMaxRolledBackBuilds = 4;
+
+// True when `stored` lists the build `version` names (prefix-insensitive).
+bool rolledBackListContains(const std::string& stored, const std::string& version);
+
+// `stored` with `version` (report form) moved to the front, keeping at most
+// kMaxRolledBackBuilds entries. Empty or over-long versions leave it as is.
+std::string rolledBackListAdd(const std::string& stored, const std::string& version);
+
 enum class OtaDecision : uint8_t {
-  None,      // no offer
-  Current,   // the offer names the running build: nothing to do
-  Install,   // the offer names another build (newer or older)
-  Deferred,  // only reachable over the tunnel, and tunnel OTA is off
+  None,        // no offer
+  Current,     // the offer names the running build: nothing to do
+  Install,     // the offer names another build (newer or older)
+  Deferred,    // only reachable over the tunnel, and tunnel OTA is off
+  RolledBack,  // this device already rolled back from the offered build
 };
 
-// "none", "current", "install", "deferred:tunnel".
+// "none", "current", "install", "deferred:tunnel", "deferred:rolled_back".
 const char* otaDecisionName(OtaDecision d);
 
 // viaTunnel: the offer came from the tunnel origin (not the LAN one).
 // tunnelOtaEnabled: the XTEINK_OTA_TUNNEL build flag (decision c32).
+// rolledBackList: the persistent rolled-back record (rolledBackListAdd form).
 OtaDecision decideOta(const FirmwareOffer& offer, const std::string& runningVersion, bool viaTunnel,
-                      bool tunnelOtaEnabled);
+                      bool tunnelOtaEnabled, const std::string& rolledBackList = "");
 
 // True when `origin` is the LAN origin serverOrder() derives from `lanUrl`
 // (kDefaultLanUrl when empty).
@@ -300,6 +323,13 @@ class OtaPort {
   virtual bool otaEnd() = 0;                                   // esp_ota_end (ESP image check)
   virtual void otaAbort() = 0;                                 // esp_ota_abort
   virtual bool setBootPartition() = 0;                         // esp_ota_set_boot_partition
+  // Rollback bookkeeping around the boot switch: recordCandidate() runs right
+  // before setBootPartition() (NVS "rb_cand" = the offered build), so an image
+  // that crashes before its own health check still gets reported by the old
+  // image after the bootloader rolls back; clearCandidate() undoes it when the
+  // switch fails.
+  virtual void recordCandidate() {}
+  virtual void clearCandidate() {}
   virtual void hashReset() = 0;
   virtual void hashUpdate(const uint8_t* data, size_t len) = 0;
   virtual std::string hashHex() = 0;
@@ -315,9 +345,9 @@ class OtaPort {
 
 // Streams the offered image into the inactive OTA slot, hashing exactly the
 // bytes written, and switches the boot partition only when the size and the
-// sha256 match the offer and esp_ota_end accepted the image. Any failure aborts
-// the slot, so the running firmware stays the boot target. Returns the error
-// code to record (Error::None on success).
+// sha256 match the offer and esp_ota_end accepted the image (recording the
+// candidate first). Any failure aborts the slot, so the running firmware stays
+// the boot target. Returns the error code to record (Error::None on success).
 Error installOffer(const FirmwareOffer& offer, OtaPort& port);
 
 }  // namespace xteink::sync

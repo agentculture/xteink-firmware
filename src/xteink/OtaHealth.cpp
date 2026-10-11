@@ -63,14 +63,20 @@ BootOutcome runOnBoot(HealthPort& port, const uint32_t windowMs, const uint32_t 
     // or was aborted by the bootloader (crash, power cut). Report it once.
     const std::string cand = port.candidate();
     if (!cand.empty()) {
-      if (port.hasInvalidPartition() && cand != port.runningVersion()) port.setRolledBack(cand);
+      if (port.hasInvalidPartition() && !sync::sameFirmwareVersion(cand, port.runningVersion())) {
+        port.setRolledBack(cand);
+        port.rememberRolledBack(cand);
+      }
       port.clearCandidate();
     }
     return BootOutcome::NotPending;
   }
 
-  // Recorded before any check, so a crash during the check is reported too.
-  port.setCandidate(port.runningVersion());
+  // The installer recorded the candidate before switching the boot partition;
+  // make sure (an image flashed another way, or an older installer) without
+  // rewriting NVS when it is already set.
+  const std::string running = port.runningVersion();
+  if (port.candidate() != running) port.setCandidate(running);
   const Decision d = decideHealth(port, windowMs, retryDelayMs);
   if (decision) *decision = d;
   if (d.verdict == Verdict::Valid) {
@@ -111,19 +117,31 @@ constexpr const char* kFirmwareVersion = "xteink-fw " CROSSPOINT_VERSION;
 constexpr const char* kNvsNamespace = "xteink";  // shared with XteinkConfig/XteinkSync
 constexpr const char* kNvsCandidate = "rb_cand";
 constexpr const char* kNvsRolledBack = "rb_version";
+constexpr const char* kNvsRolledBackList = "rb_list";
 constexpr size_t kMaxVersionLen = 96;
+// rb_list: kMaxRolledBackBuilds report-form versions, newline-separated.
+constexpr size_t kMaxListLen = sync::kMaxRolledBackBuilds * (sync::kMaxFirmwareVersionLen + 11);
 
-std::string nvsGet(const char* key) {
+// The offer from this boot's passed health check (takeCheckedOffer()).
+struct CheckedOffer {
+  bool valid = false;
+  sync::FirmwareOffer offer;
+  std::string origin;
+};
+CheckedOffer checkedOffer;
+
+std::string nvsGet(const char* key, const size_t maxLen = kMaxVersionLen) {
   nvs_handle_t h;
   if (nvs_open(kNvsNamespace, NVS_READONLY, &h) != ESP_OK) return "";
-  char buf[kMaxVersionLen + 1];
-  size_t len = sizeof(buf);
-  if (nvs_get_str(h, key, buf, &len) != ESP_OK) buf[0] = '\0';
+  std::string buf(maxLen + 1, '\0');
+  size_t len = buf.size();
+  if (nvs_get_str(h, key, buf.data(), &len) != ESP_OK) len = 0;
   nvs_close(h);
+  buf.resize(len > 0 ? len - 1 : 0);  // len counts the terminator
   return buf;
 }
 
-void nvsSet(const char* key, const std::string& value) {
+void nvsSet(const char* key, const std::string& value, const size_t maxLen = kMaxVersionLen) {
   nvs_handle_t h;
   if (nvs_open(kNvsNamespace, NVS_READWRITE, &h) != ESP_OK) {
     LOG_ERR(kTag, "NVS open failed");
@@ -134,7 +152,7 @@ void nvsSet(const char* key, const std::string& value) {
     err = nvs_erase_key(h, key);
     if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
   } else {
-    err = nvs_set_str(h, key, value.substr(0, kMaxVersionLen).c_str());
+    err = nvs_set_str(h, key, value.substr(0, maxLen).c_str());
   }
   if (err == ESP_OK) err = nvs_commit(h);
   nvs_close(h);
@@ -154,6 +172,7 @@ class DevicePort final : public HealthPort {
   bool sdOk() override { return sd; }
 
   bool postStatus(const uint32_t remaining) override {
+    const uint32_t startMs = ::millis();
     if (WiFi.status() != WL_CONNECTED) {
       if (!storeLoaded) {
         WIFI_STORE.loadFromFile();
@@ -165,9 +184,12 @@ class DevicePort final : public HealthPort {
         return false;
       }
     }
-    // The OTA check is one status POST (LAN first, then the tunnel).
+    // The OTA check is one status POST (LAN first, then the tunnel), bounded by
+    // what the join left of the window.
+    const uint32_t spent = ::millis() - startMs;
+    if (spent >= remaining) return false;
     OtaUpdater updater;
-    const OtaUpdater::OtaUpdaterError e = updater.checkForUpdate();
+    const OtaUpdater::OtaUpdaterError e = updater.checkForUpdate(remaining - spent);
     // Any HTTP answer proves the new image boots and reaches the server (d8): a
     // server error (5xx while it restarts, 401 for a key problem) is not a reason
     // to roll back a good build. Only no answer at all fails the check.
@@ -175,6 +197,10 @@ class DevicePort final : public HealthPort {
     if (e != OtaUpdater::OK && e != OtaUpdater::NO_UPDATE) {
       LOG_ERR(kTag, "Status POST %s: %s", answered ? "answered with an error" : "failed",
               sync::errorCode(updater.getLastError()));
+    } else {
+      checkedOffer.valid = true;
+      checkedOffer.offer = updater.getOffer();
+      checkedOffer.origin = updater.getOrigin();
     }
     return answered;
   }
@@ -201,6 +227,9 @@ class DevicePort final : public HealthPort {
     LOG_INF(kTag, "Rolled back from %s", version.c_str());
     nvsSet(kNvsRolledBack, version);
   }
+  void rememberRolledBack(const std::string& version) override {
+    nvsSet(kNvsRolledBackList, sync::rolledBackListAdd(rolledBackBuilds(), version), kMaxListLen);
+  }
 
  private:
   const bool display;
@@ -210,7 +239,7 @@ class DevicePort final : public HealthPort {
 
 }  // namespace
 
-void onBoot(const bool displayOk, const bool sdOk) {
+void onBoot(const bool displayOk, const bool sdOk, const bool routineFollows) {
   DevicePort port(displayOk, sdOk);
   const uint32_t startMs = millis();
   Decision d;
@@ -220,13 +249,32 @@ void onBoot(const bool displayOk, const bool sdOk) {
   LOG_INF(kTag, "Health check of %s: %s (%s, %u attempts, %lu ms)", kFirmwareVersion,
           outcome == BootOutcome::Valid ? "valid" : "rollback failed", reasonName(d.reason),
           static_cast<unsigned>(d.attempts), static_cast<unsigned long>(millis() - startMs));
+  // The daily routine runs next and reuses the joined station (and the offer).
+  if (routineFollows) return;
+  checkedOffer = CheckedOffer{};
   if (WiFi.getMode() != WIFI_MODE_NULL) {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
   }
 }
 
+bool takeCheckedOffer(sync::FirmwareOffer& offer, std::string& origin) {
+  if (!checkedOffer.valid) return false;
+  offer = checkedOffer.offer;
+  origin = checkedOffer.origin;
+  checkedOffer = CheckedOffer{};
+  return true;
+}
+
 std::string rolledBackVersion() { return nvsGet(kNvsRolledBack); }
+
+std::string rolledBackBuilds() { return nvsGet(kNvsRolledBackList, kMaxListLen); }
+
+void recordInstallCandidate(const std::string& offeredVersion) {
+  nvsSet(kNvsCandidate, sync::firmwareReportVersion(offeredVersion));
+}
+
+void clearInstallCandidate() { nvsSet(kNvsCandidate, ""); }
 
 void clearRolledBackVersion(const std::string& sent) {
   if (sent.empty() || nvsGet(kNvsRolledBack) != sent) return;

@@ -34,7 +34,7 @@ class OtaUpdater {
 
   enum OtaUpdaterError {
     OK = 0,
-    NO_UPDATE,  // no offer, the offer is the running build, or it is deferred
+    NO_UPDATE,  // no offer, the offer is the running build, deferred, or rolled back from
     HTTP_ERROR,
     JSON_PARSE_ERROR,
     UPDATE_OLDER_ERROR,  // installUpdate() without an installable offer
@@ -56,8 +56,13 @@ class OtaUpdater {
   // POST /api/device/status (firmware_version only) to the LAN origin, then
   // the tunnel, and reads the offer from the first origin that answers.
   // OK when the offer should be installed; NO_UPDATE when there is none, it is
-  // the running build, or it is deferred (getDecision() says which).
-  OtaUpdaterError checkForUpdate();
+  // the running build, it is deferred, or this device already rolled back from
+  // it (getDecision() says which).
+  // `deadlineMs` > 0 bounds the whole check, both origins included: no request
+  // starts once it has passed and each one is cut off when it runs out (the
+  // daily routine's cap, the health check's window). 0 = only the per-origin
+  // timeouts.
+  OtaUpdaterError checkForUpdate(uint32_t deadlineMs = 0);
 
   // Takes an offer read from another status response (for example the daily
   // routine's). `fromOrigin` is the origin that sent that response.
@@ -65,6 +70,8 @@ class OtaUpdater {
 
   xteink::sync::OtaDecision getDecision() const { return decision; }
   const xteink::sync::FirmwareOffer& getOffer() const { return offer; }
+  // Origin whose status response carried the offer ("" before a check).
+  const std::string& getOrigin() const { return origin; }
   // Error of the last check or install (Error::None on success). errorCode()
   // turns it into the E-code for the status report's last_error.
   xteink::sync::Error getLastError() const { return lastError; }
