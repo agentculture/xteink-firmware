@@ -22,8 +22,10 @@
 #include <WiFi.h>
 #include <XteinkDetect.h>
 #include <builtinFonts/all.h>
+#include <esp_system.h>
 
 #include <cstring>
+#include <ctime>
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
@@ -45,7 +47,9 @@
 #include "util/PluginEvents.h"
 #include "util/ScreenshotUtil.h"
 #include "util/Timezones.h"
+#include "xteink/DailyRoutine.h"
 #include "xteink/KeyDiag.h"
+#include "xteink/OtaHealth.h"
 #include "xteink/ProvisioningProtocol.h"
 #include "xteink/ResetBoot.h"
 
@@ -515,6 +519,7 @@ void setup() {
   if (!Storage.begin()) {
     LOG_ERR("MAIN", "SD card initialization failed");
     setupDisplayAndFonts(isSilentReboot);
+    xteink::otahealth::onBoot(display.getFrameBuffer() != nullptr, /*sdOk=*/false);  // xteink: rolls back a new image
     activityManager.goToFullScreenMessage("SD card error", EpdFontFamily::BOLD);
     return;
   }
@@ -548,6 +553,9 @@ void setup() {
   UITheme::getInstance().reload();
   ButtonNavigator::setMappedInputManager(mappedInputManager);
   pluginevents::refreshSubscriptions();
+  // xteink: the clock as it came up, before the floor is restored into it; the
+  // daily routine judges whether it can be trusted (DailyRoutine.h).
+  const auto bootClockEpoch = static_cast<int64_t>(time(nullptr));
   // Restore the monotonic clock floor before anything reads time() (event
   // timestamps, loan-expiry checks).
   trustedtime::init();
@@ -638,6 +646,34 @@ void setup() {
     case BootResume::Splash:
       activityManager.goToBoot();
       break;
+  }
+
+  // xteink: first boot after an OTA keeps the image only if it reaches the server (OtaHealth.h).
+  // The daily routine below releases the radio, so a passed check leaves it up for it.
+  xteink::otahealth::onBoot(display.getFrameBuffer() != nullptr, /*sdOk=*/true, /*routineFollows=*/true);
+
+  // xteink: once-a-day start routine (battery, Wi-Fi, OTA, book sync) before
+  // Home or a resumed book opens. Power-button and plain boots only; bounded
+  // by a wall-clock cap, never waits for input (DailyRoutine.h).
+  {
+    using xteink::daily::BootKind;
+    BootKind bootKind = BootKind::Other;
+    switch (wakeupReason) {
+      case HalGPIO::WakeupReason::PowerButton:
+        bootKind = BootKind::PowerButton;
+        break;
+      case HalGPIO::WakeupReason::AfterUSBPower:
+        bootKind = BootKind::AfterUSBPower;
+        break;
+      case HalGPIO::WakeupReason::AfterFlash:
+        bootKind = BootKind::AfterFlash;
+        break;
+      case HalGPIO::WakeupReason::Other:
+      default:
+        break;
+    }
+    xteink::daily::onBoot(renderer, bootKind, isSilentReboot, rebootedFromPanic, recoveryFirmwareMode,
+                          esp_reset_reason() == ESP_RST_DEEPSLEEP, bootClockEpoch);
   }
 
   // Output polarity is resolved per render by ActivityManager (night mode

@@ -40,7 +40,11 @@ struct Outcome {
 // before TLS. `itemBudgetMs` > 0 stops starting new downloads after that long
 // (the item in flight completes); later items stay queued for the next sync.
 // The result is persisted for the home status line unless cancelled.
-Outcome run(const GfxRenderer* renderer, const Callbacks& callbacks, uint32_t itemBudgetMs = 0);
+// `runFields` (optional, the daily routine's) adds run_started_at, run_trigger
+// and fw_outcome to both status reports and content_outcome to the closing
+// one; a manual sync passes none, so no stale run fields are sent.
+Outcome run(const GfxRenderer* renderer, const Callbacks& callbacks, uint32_t itemBudgetMs = 0,
+            const RunFields* runFields = nullptr);
 
 // Wi-Fi join hook (WifiSelectionActivity): runs a bounded sync when a device
 // key is provisioned, no book is open and the heap allows it.
@@ -49,8 +53,9 @@ void onStationJoined(GfxRenderer& renderer);
 // Set while XteinkSyncActivity owns the join, so the hook does not sync twice.
 void setJoinHookSuppressed(bool suppressed);
 
-// The home status line ("Synced 14:02 · 2 new", "Sync error E401"). False when
-// there is nothing to show. Safe to call from the render task.
+// The home status line ("Synced 14:02 · 2 new", "Sync error E401"), plus the
+// daily routine's note ("Update pending", DailyRoutine.h). False when there is
+// nothing to show. Safe to call from the render task.
 bool statusLine(char* buf, size_t len);
 
 // Draws statusLine() centered just above the button hints, if that band is

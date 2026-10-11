@@ -5,192 +5,247 @@
 // ip4_addr.h unless seen first. Pin this order; clang-format would otherwise sort
 // the local header last and break the build.
 #include "HttpDownloader.h"
+#include <Arduino.h>
 #include <Logging.h>
 #include <Memory.h>
-#include <ReleaseJsonParser.h>
+#include <ResumableFetch.h>
+#include <SecureHttpClient.h>
 #include <esp_ota_ops.h>
+#include <mbedtls/sha256.h>
 // clang-format on
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
+#include <memory>
 #include <string>
-#include <string_view>
 
 #include "FirmwareBoardTag.h"
 #include "FirmwareFlasher.h"
+#include "TlsTrust.h"
+#include "WifiPowerSaveGuard.h"
+#include "xteink/OtaHealth.h"
+#include "xteink/XteinkConfig.h"
+
+namespace xs = xteink::sync;
 
 namespace {
-// xteink fork: OTA comes from this fork's GitHub releases only, never
-// upstream's (docs/xteink/CONTRIBUTING.md). The one place to change the source.
-constexpr std::string_view OTA_RELEASE_REPO = "agentculture/xteink-firmware";
 
-std::string latestReleaseUrl() {
-  std::string url = "https://api.github.com/repos/";
-  url.append(OTA_RELEASE_REPO);
-  url.append("/releases/latest");
-  return url;
-}
-}  // namespace
+constexpr const char* kTag = "OTA";
+// Same string the sync's status report sends, so the server sees one version.
+constexpr const char* kFirmwareVersion = "xteink-fw " CROSSPOINT_VERSION;
 
-OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
-  LOG_DBG("OTA", "Checking for update (current: %s)", CROSSPOINT_VERSION);
+// Mirrors the sync client (XteinkSync.cpp): a quick LAN probe, a longer tunnel
+// connect, and a generous per-phase timeout for the image transfer.
+constexpr uint32_t kLanTimeoutMs = 4000;
+constexpr uint32_t kTunnelTimeoutMs = 15000;
+constexpr uint32_t kTransferTimeoutMs = 30000;
 
-  // Stream the ~32KB release JSON straight into the parser as it arrives.
-  // Buffering the whole body in a std::string would add a growing allocation
-  // on top of the TLS session's heap during the fetch; with -fno-exceptions an
-  // OOM there aborts. fetchUrl handles the verified-https GET, redirects, and
-  // User-Agent (see HttpDownloader).
-  // Heap-allocated: the parser embeds a 2 KB JSON token buffer.
-  auto releaseParserPtr = makeUniqueNoThrow<ReleaseJsonParser>();
-  if (!releaseParserPtr) {
-    LOG_ERR("OTA", "OOM: release parser");
-    return OOM_ERROR;
-  }
-  ReleaseJsonParser& releaseParser = *releaseParserPtr;
-  releaseParser.setFirmwareAssetName("");
-  // Each board updates from crosspoint-<version>-<device>.bin. The combined
-  // C3 image uses x3-x4; other asset suffixes match their firmware board tag.
-  const bool isX4 = board_tag::boardNameLen() == 2 && memcmp(board_tag::boardName(), "x4", 2) == 0;
-  char assetSuffix[20] = "-x3-x4";
-  if (!isX4) {
-    snprintf(assetSuffix, sizeof(assetSuffix), "-%.*s", static_cast<int>(board_tag::boardNameLen()),
-             board_tag::boardName());
-  }
-  char assetName[48] = {};
-  bool assetNameSet = false;
-  const bool ok = HttpDownloader::fetchUrl(latestReleaseUrl(), [&](const uint8_t* data, size_t len) {
-    size_t offset = 0;
-    while (!assetNameSet && offset < len) {
-      releaseParser.feed(reinterpret_cast<const char*>(data + offset), 1);
-      offset++;
-      if (releaseParser.foundTag()) {
-        snprintf(assetName, sizeof(assetName), "crosspoint-%s%s.bin", releaseParser.getTagName(), assetSuffix);
-        releaseParser.setFirmwareAssetName(assetName);
-        assetNameSet = true;
-      }
-    }
-    if (offset < len) releaseParser.feed(reinterpret_cast<const char*>(data + offset), len - offset);
-    return true;
-  });
+constexpr uint32_t kMinFreeHeapTls = HttpDownloader::MIN_TLS_FREE_HEAP + 6000;
+constexpr uint32_t kMinMaxAllocTls = HttpDownloader::MIN_TLS_MAX_ALLOC + 2000;
+constexpr uint32_t kMinFreeHeapPlain = 16000;
+constexpr uint32_t kMinMaxAllocPlain = 8000;
+
+bool heapOk(const bool tls) {
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  const uint32_t maxAlloc = ESP.getMaxAllocHeap();
+  const bool ok = tls ? (freeHeap >= kMinFreeHeapTls && maxAlloc >= kMinMaxAllocTls)
+                      : (freeHeap >= kMinFreeHeapPlain && maxAlloc >= kMinMaxAllocPlain);
   if (!ok) {
-    LOG_ERR("OTA", "Release check fetch failed");
-    return HTTP_ERROR;
+    LOG_ERR(kTag, "Low heap for %s: %u free, %u max block", tls ? "https" : "http", static_cast<unsigned>(freeHeap),
+            static_cast<unsigned>(maxAlloc));
   }
-
-  LOG_DBG("OTA", "Parser results: tag=%s firmware=%s", releaseParser.foundTag() ? "yes" : "no",
-          releaseParser.foundFirmware() ? "yes" : "no");
-
-  if (!releaseParser.foundTag()) {
-    LOG_ERR("OTA", "No tag_name in release JSON");
-    return JSON_PARSE_ERROR;
-  }
-
-  if (!releaseParser.foundFirmware()) {
-    LOG_INF("OTA", "No %s asset in latest release", assetName);
-    return NO_UPDATE;
-  }
-
-  latestVersion = releaseParser.getTagName();
-  otaUrl = releaseParser.getFirmwareUrl();
-  otaSize = releaseParser.getFirmwareSize();
-  totalSize = otaSize;
-  updateAvailable = true;
-
-  LOG_DBG("OTA", "Found update: tag=%s size=%zu", latestVersion.c_str(), otaSize);
-  LOG_DBG("OTA", "Firmware URL: %s", otaUrl.c_str());
-  return OK;
+  return ok;
 }
 
-bool OtaUpdater::isUpdateNewer() const {
-  if (!updateAvailable || latestVersion.empty() || latestVersion == CROSSPOINT_VERSION) {
-    return false;
+// Request headers for the xteink origin. The device key is attached only while
+// the request stays on that origin (fetchResumable reports sameOrigin=false
+// after a redirect elsewhere).
+void configureClient(freeink::SecureHttpClient& client, const std::string& auth, const uint32_t timeoutMs,
+                     const bool sameOrigin) {
+  client.setTimeout(timeoutMs);
+  tls_trust::applyVerifiedTls(client);
+  client.setUserAgent("CrossPoint-ESP32-" CROSSPOINT_VERSION);
+  if (sameOrigin) {
+    client.addHeader("Authorization", auth);
+    client.addHeader(xs::kProtocolHeader, xs::kProtocolVersion);
+  }
+}
+
+// One status POST. HTTP status, or -1 on a transport failure, an over-long
+// body, a truncated body, or when the whole-call budget ran out. `leftMs` > 0
+// is what is left of the caller's deadline and caps this call.
+int postStatus(const std::string& origin, const std::string& auth, const std::string& body, std::string& response,
+               const uint32_t leftMs) {
+  auto http = makeUniqueNoThrow<freeink::SecureHttpClient>();
+  if (!http) return -1;
+  const bool https = xs::isHttps(origin);
+  uint32_t timeoutMs = https ? kTunnelTimeoutMs : kLanTimeoutMs;
+  if (leftMs > 0) timeoutMs = std::min(timeoutMs, leftMs);
+  WifiPowerSaveGuard psGuard;
+  if (https) tls_trust::ensureClockForTls();
+  if (!http->begin(origin + "/api/device/status")) return -1;
+  configureClient(*http, auth, timeoutMs, true);
+  http->addHeader("Content-Type", "application/json");
+  bool tooLarge = false;
+  const auto sink = [&response, &tooLarge](const uint8_t* data, const size_t len) {
+    if (response.size() + len > xs::kMaxStatusResponse) {
+      tooLarge = true;
+      return false;
+    }
+    response.append(reinterpret_cast<const char*>(data), len);
+    return true;
+  };
+  // The LAN probe has a whole-call budget so a slow peer cannot hold it (r21);
+  // a caller deadline bounds either origin.
+  const uint32_t startMs = millis();
+  uint32_t budgetMs = https ? 0 : kLanTimeoutMs;
+  if (leftMs > 0) budgetMs = budgetMs == 0 ? leftMs : std::min(budgetMs, leftMs);
+  const int status = http->sendRequest("POST", reinterpret_cast<const uint8_t*>(body.data()), body.size(), sink,
+                                       [startMs, budgetMs] { return xs::budgetExpired(millis(), startMs, budgetMs); });
+  const bool complete = http->responseComplete();
+  const bool aborted = http->aborted();
+  http->end();
+  if (aborted || tooLarge) return -1;
+  if (status >= 200 && status < 300 && !complete) return -1;
+  return status;
+}
+
+class Sha256 {
+ public:
+  Sha256() { start(); }
+  ~Sha256() { mbedtls_sha256_free(&ctx); }
+  Sha256(const Sha256&) = delete;
+  Sha256& operator=(const Sha256&) = delete;
+  void reset() {
+    mbedtls_sha256_free(&ctx);
+    start();
+  }
+  void update(const uint8_t* data, const size_t len) { mbedtls_sha256_update(&ctx, data, len); }
+  std::string hex() {
+    uint8_t digest[32];
+    mbedtls_sha256_finish(&ctx, digest);
+    return xs::toHex(digest, sizeof(digest));
   }
 
-  int currentMajor = 0, currentMinor = 0, currentPatch = 0;
-  int latestMajor = 0, latestMinor = 0, latestPatch = 0;
+ private:
+  void start() {
+    mbedtls_sha256_init(&ctx);
+    mbedtls_sha256_starts(&ctx, /*is224=*/0);
+  }
+  mbedtls_sha256_context ctx;
+};
 
-  const auto currentVersion = CROSSPOINT_VERSION;
+// The device side of xs::OtaPort: verified HTTP(S) download from the xteink
+// origin, the inactive OTA slot, mbedTLS sha256, and the chip-id and board-tag
+// checks that keep another device's image out of the slot.
+class DevicePort final : public xs::OtaPort {
+ public:
+  DevicePort(std::string imageUrl, std::string authHeader, std::string offeredVersion, const esp_partition_t* slot,
+             size_t& processed, const size_t total, OtaUpdater::ProgressCallback cb, void* cbCtx, const uint32_t budget)
+      : url(std::move(imageUrl)),
+        auth(std::move(authHeader)),
+        version(std::move(offeredVersion)),
+        partition(slot),
+        processedSize(processed),
+        totalSize(total),
+        onProgress(cb),
+        ctx(cbCtx),
+        budgetMs(budget),
+        startMs(millis()) {}
 
-  // semantic version check (only match on 3 segments)
-  // xteink fork: a tag or build version that is not X.Y.Z[...] is never
-  // "newer" (the values were read uninitialized before), so a mis-tagged
-  // release cannot trigger an install.
-  if (sscanf(latestVersion.c_str(), "%d.%d.%d", &latestMajor, &latestMinor, &latestPatch) != 3 ||
-      sscanf(currentVersion, "%d.%d.%d", &currentMajor, &currentMinor, &currentPatch) != 3) {
-    LOG_ERR("OTA", "Unparseable version: latest=%s current=%s", latestVersion.c_str(), currentVersion);
-    return false;
+  freeink::SecureHttpClient::AbortCallback abortCallback() const {
+    if (budgetMs == 0) return nullptr;
+    const uint32_t start = startMs;
+    const uint32_t budget = budgetMs;
+    return [start, budget] { return xs::budgetExpired(millis(), start, budget); };
   }
 
-  /*
-   * Compare major versions.
-   * If they differ, return true if latest major version greater than current major version
-   * otherwise return false.
-   */
-  if (latestMajor != currentMajor) return latestMajor > currentMajor;
+  xs::OtaFetchResult fetch(const xs::OtaSink& sink) override {
+    freeink::FetchSink fetchSink;
+    fetchSink.write = sink.write;
+    fetchSink.rewind = sink.rewind;
+    freeink::FetchResult r;
+    {
+      WifiPowerSaveGuard psGuard;
+      if (tls_trust::isHttpsUrl(url)) tls_trust::ensureClockForTls();
+      const std::string& authRef = auth;
+      r = freeink::fetchResumable(
+          url, freeink::FetchOptions{},
+          [&authRef](freeink::SecureHttpClient& http, const bool sameOrigin) {
+            configureClient(http, authRef, kTransferTimeoutMs, sameOrigin);
+          },
+          fetchSink, abortCallback());
+    }
+    xs::OtaFetchResult out;
+    out.status = r.status;
+    out.complete = r.complete;
+    out.aborted = r.aborted;
+    return out;
+  }
 
-  /*
-   * Compare minor versions.
-   * If they differ, return true if latest minor version greater than current minor version
-   * otherwise return false.
-   */
-  if (latestMinor != currentMinor) return latestMinor > currentMinor;
-
-  /*
-   * Check patch versions.
-   */
-  if (latestPatch != currentPatch) return latestPatch > currentPatch;
-
-  // If we reach here, it means all segments are equal.
-  // One final check, if we're on an RC build (contains "-rc"), we should consider the latest version as newer even if
-  // the segments are equal, since RC builds are pre-release versions.
-  if (strstr(currentVersion, "-rc") != nullptr) {
+  bool otaBegin() override {
+    // The offer's size: esp_ota_begin erases only the sectors the image needs,
+    // not the whole 6.4 MB slot (OTA_SIZE_UNKNOWN), inside the install budget.
+    const esp_err_t err = esp_ota_begin(partition, totalSize > 0 ? totalSize : OTA_SIZE_UNKNOWN, &handle);
+    if (err != ESP_OK) {
+      LOG_ERR(kTag, "esp_ota_begin failed: %s", esp_err_to_name(err));
+      open = false;
+      return false;
+    }
+    open = true;
     return true;
   }
 
-  return false;
-}
-
-const std::string& OtaUpdater::getLatestVersion() const { return latestVersion; }
-
-OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgress, void* ctx) {
-  if (!isUpdateNewer()) {
-    return UPDATE_OLDER_ERROR;
+  bool otaWrite(const uint8_t* data, const size_t len) override {
+    const esp_err_t err = esp_ota_write(handle, data, len);
+    if (err != ESP_OK) {
+      LOG_ERR(kTag, "esp_ota_write failed: %s", esp_err_to_name(err));
+      return false;
+    }
+    return true;
   }
 
-  // esp_https_ota is hardwired to esp-tls/mbedTLS, whose precompiled build on this
-  // package can't negotiate TLS 1.3 (see SecureClient.h). Drive the OTA partition
-  // ourselves and stream the firmware through HttpDownloader, which runs over
-  // wolfSSL when FREEINK_NET_WOLFSSL is set, reusing its redirect handling for the
-  // GitHub -> CDN hop.
-  const esp_partition_t* updatePartition = esp_ota_get_next_update_partition(nullptr);
-  if (!updatePartition) {
-    LOG_ERR("OTA", "No OTA partition available");
-    return INTERNAL_UPDATE_ERROR;
+  bool otaEnd() override {
+    open = false;
+    const esp_err_t err = esp_ota_end(handle);  // validates the written image
+    if (err != ESP_OK) {
+      LOG_ERR(kTag, "esp_ota_end failed: %s", esp_err_to_name(err));
+      return false;
+    }
+    return true;
   }
 
-  esp_ota_handle_t otaHandle = 0;
-  esp_err_t esp_err = esp_ota_begin(updatePartition, OTA_SIZE_UNKNOWN, &otaHandle);
-  if (esp_err != ESP_OK) {
-    LOG_ERR("OTA", "esp_ota_begin failed: %s", esp_err_to_name(esp_err));
-    return INTERNAL_UPDATE_ERROR;
+  void otaAbort() override {
+    if (!open) return;
+    esp_ota_abort(handle);
+    open = false;
   }
 
-  processedSize = 0;
-  int lastReportedPct = -1;
-  bool flashOk = true;
-  // The image streams in chunks; only the first bytes carry the header. Buffer
-  // the first 14 bytes so we can read chip_id (esp_image_header_t offset 12)
-  // and reject a wrong-MCU image before it overwrites the OTA partition.
-  uint8_t hdr[14];
-  size_t hdrLen = 0;
-  bool wrongChip = false;
-  // All S3 boards share a chip_id, so also scan the stream for the embedded
-  // board tag (FirmwareBoardTag.h). An untagged image passes; a tag naming a
-  // different board aborts the download. The wrong image may partially land in
-  // the inactive OTA slot, but esp_ota_abort() below means it never becomes
-  // the boot target.
-  board_tag::Scanner tagScanner;
-  const bool fetchOk = HttpDownloader::fetchUrl(otaUrl, [&](const uint8_t* data, size_t len) {
+  bool setBootPartition() override {
+    const esp_err_t err = esp_ota_set_boot_partition(partition);
+    if (err != ESP_OK) {
+      LOG_ERR(kTag, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(err));
+      return false;
+    }
+    return true;
+  }
+
+  void recordCandidate() override { xteink::otahealth::recordInstallCandidate(version); }
+  void clearCandidate() override { xteink::otahealth::clearInstallCandidate(); }
+
+  void hashReset() override { sha.reset(); }
+  void hashUpdate(const uint8_t* data, const size_t len) override { sha.update(data, len); }
+  std::string hashHex() override { return sha.hex(); }
+
+  void guardReset() override {
+    hdrLen = 0;
+    tagScanner = board_tag::Scanner{};
+  }
+
+  bool guardFeed(const uint8_t* data, const size_t len) override {
+    // Only the first bytes carry the image header: buffer 14 so chip_id
+    // (esp_image_header_t offset 12) is checked before the slot is written.
     if (hdrLen < sizeof(hdr)) {
       const size_t take = std::min(len, sizeof(hdr) - hdrLen);
       std::memcpy(hdr + hdrLen, data, take);
@@ -200,60 +255,175 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
         std::memcpy(&imageChip, hdr + 12, sizeof(imageChip));
         const uint16_t deviceChip = firmware_flash::runningPartitionChipId();
         if (deviceChip != 0xFFFF && imageChip != deviceChip) {
-          LOG_ERR("OTA", "wrong chip: image=0x%04X device=0x%04X", imageChip, deviceChip);
-          wrongChip = true;
-          return false;  // abort the transfer
+          LOG_ERR(kTag, "wrong chip: image=0x%04X device=0x%04X", imageChip, deviceChip);
+          return false;
         }
       }
     }
+    // All S3 boards share a chip_id, so also scan for the embedded board tag
+    // (FirmwareBoardTag.h). An untagged image passes; another board's tag fails.
     tagScanner.feed(data, len);
     if (tagScanner.mismatch()) {
-      LOG_ERR("OTA", "wrong board: image=%s device=%.*s", tagScanner.foundName(),
+      LOG_ERR(kTag, "wrong board: image=%s device=%.*s", tagScanner.foundName(),
               static_cast<int>(board_tag::boardNameLen()), board_tag::boardName());
-      return false;  // abort the transfer
+      return false;
     }
-    if (esp_ota_write(otaHandle, data, len) != ESP_OK) {
-      flashOk = false;
-      return false;  // abort the transfer
-    }
-    processedSize += len;
-    // Fire the callback only on whole-percent change. Per-chunk updates wake the
-    // render task, whose framebuffer work contends with TLS on the internal arena,
-    // and e-ink can't repaint faster than a percent tick anyway.
+    return true;
+  }
+
+  void progress(const size_t written, size_t) override {
+    processedSize = written;
+    // Fire only on whole-percent change: per-chunk updates wake the render
+    // task, whose framebuffer work contends with TLS for the heap.
     if (onProgress && totalSize > 0) {
-      const int pct = static_cast<int>(static_cast<uint64_t>(processedSize) * 100 / totalSize);
-      if (pct != lastReportedPct) {
-        lastReportedPct = pct;
+      const int pct = static_cast<int>(static_cast<uint64_t>(written) * 100 / totalSize);
+      if (pct != lastPct) {
+        lastPct = pct;
         onProgress(ctx);
       }
     }
-    return true;
-  });
-
-  if (wrongChip || tagScanner.mismatch()) {
-    LOG_ERR("OTA", "Firmware install aborted: wrong device");
-    esp_ota_abort(otaHandle);
-    return WRONG_DEVICE_ERROR;
   }
 
-  if (!fetchOk || !flashOk) {
-    LOG_ERR("OTA", "Firmware install failed (%s)", flashOk ? "download" : "flash write");
-    esp_ota_abort(otaHandle);
-    return flashOk ? HTTP_ERROR : INTERNAL_UPDATE_ERROR;
-  }
+ private:
+  const std::string url;
+  const std::string auth;
+  const std::string version;
+  const esp_partition_t* partition;
+  size_t& processedSize;
+  const size_t totalSize;
+  OtaUpdater::ProgressCallback onProgress;
+  void* ctx;
+  const uint32_t budgetMs;  // 0 = no wall-clock budget
+  const uint32_t startMs;
+  esp_ota_handle_t handle = 0;
+  bool open = false;
+  Sha256 sha;
+  uint8_t hdr[14] = {};
+  size_t hdrLen = 0;
+  board_tag::Scanner tagScanner;
+  int lastPct = -1;
+};
 
-  esp_err = esp_ota_end(otaHandle);  // verifies the written image
-  if (esp_err != ESP_OK) {
-    LOG_ERR("OTA", "esp_ota_end failed: %s", esp_err_to_name(esp_err));
+}  // namespace
+
+void OtaUpdater::setOffer(const xs::FirmwareOffer& newOffer, const std::string& fromOrigin) {
+  offer = newOffer;
+  origin = fromOrigin;
+  totalSize = offer.present ? static_cast<size_t>(offer.size) : 0;
+  processedSize = 0;
+  const bool viaTunnel = !xs::isLanOrigin(origin, xteink::config::getLanUrl());
+  decision = xs::decideOta(offer, CROSSPOINT_VERSION, viaTunnel, XTEINK_OTA_TUNNEL != 0,
+                           xteink::otahealth::rolledBackBuilds());
+  LOG_INF(kTag, "Offer from %s: %s (%s, running %s)", origin.c_str(), xs::otaDecisionName(decision),
+          offer.present ? offer.version.c_str() : "-", CROSSPOINT_VERSION);
+}
+
+OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate(const uint32_t deadlineMs) {
+  const uint32_t checkStartMs = millis();
+  offer = xs::FirmwareOffer{};
+  decision = xs::OtaDecision::None;
+  origin.clear();
+  lastError = xs::Error::None;
+  serverAnswered = false;
+
+  const std::string key = xteink::config::getDeviceKey();
+  if (key.empty()) {
+    // The xteink server is the only update source; unprovisioned devices have none.
+    LOG_INF(kTag, "No device key: no update source");
+    lastError = xs::Error::NoKey;
+    return NOT_PROVISIONED;
+  }
+  const std::string auth = "Bearer " + key;
+  const std::string rolledBack = xteink::otahealth::rolledBackVersion();
+  const std::string body = xs::buildFirmwareCheckJson(kFirmwareVersion, rolledBack);
+
+  bool heapSkipped = false;
+  for (const std::string& candidate : xs::serverOrder(xteink::config::getLanUrl(), xteink::config::getTunnelUrl())) {
+    uint32_t leftMs = 0;
+    if (deadlineMs > 0) {
+      const uint32_t elapsed = millis() - checkStartMs;
+      if (elapsed >= deadlineMs) {
+        LOG_INF(kTag, "Check deadline reached before %s", candidate.c_str());
+        break;
+      }
+      leftMs = deadlineMs - elapsed;
+    }
+    if (!heapOk(xs::isHttps(candidate))) {
+      heapSkipped = true;
+      continue;
+    }
+    std::string response;
+    const int status = postStatus(candidate, auth, body, response, leftMs);
+    if (status < 0) {
+      LOG_INF(kTag, "No answer from %s", candidate.c_str());
+      continue;
+    }
+    serverAnswered = true;
+    lastError = xs::errorForStatus(status);
+    if (lastError != xs::Error::None) {
+      LOG_ERR(kTag, "Status from %s: %d (%s)", candidate.c_str(), status, xs::errorCode(lastError));
+      return HTTP_ERROR;
+    }
+    xteink::otahealth::clearRolledBackVersion(rolledBack);
+    xs::FirmwareOffer parsed;
+    if (!xs::parseStatusResponse(response.data(), response.size(), parsed)) {
+      LOG_ERR(kTag, "Status response from %s did not parse", candidate.c_str());
+      lastError = xs::Error::BadResponse;
+      return JSON_PARSE_ERROR;
+    }
+    setOffer(parsed, candidate);
+    return decision == xs::OtaDecision::Install ? OK : NO_UPDATE;
+  }
+  lastError = heapSkipped ? xs::Error::LowMemory : xs::Error::Network;
+  return heapSkipped ? OOM_ERROR : HTTP_ERROR;
+}
+
+OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgress, void* ctx, const uint32_t budgetMs) {
+  if (decision != xs::OtaDecision::Install) {
+    return UPDATE_OLDER_ERROR;
+  }
+  const std::string key = xteink::config::getDeviceKey();
+  if (key.empty()) {
+    lastError = xs::Error::NoKey;
+    return NOT_PROVISIONED;
+  }
+  if (!heapOk(xs::isHttps(origin))) {
+    lastError = xs::Error::LowMemory;
+    return OOM_ERROR;
+  }
+  const esp_partition_t* updatePartition = esp_ota_get_next_update_partition(nullptr);
+  if (!updatePartition) {
+    LOG_ERR(kTag, "No OTA partition available");
+    lastError = xs::Error::Flash;
     return INTERNAL_UPDATE_ERROR;
   }
-
-  esp_err = esp_ota_set_boot_partition(updatePartition);
-  if (esp_err != ESP_OK) {
-    LOG_ERR("OTA", "esp_ota_set_boot_partition failed: %s", esp_err_to_name(esp_err));
-    return INTERNAL_UPDATE_ERROR;
+  // 2 KB of members (sha context, scanner): heap, not the caller's stack.
+  auto port = makeUniqueNoThrow<DevicePort>(origin + offer.url, "Bearer " + key, offer.version, updatePartition,
+                                            processedSize, totalSize, onProgress, ctx, budgetMs);
+  if (!port) {
+    lastError = xs::Error::LowMemory;
+    return OOM_ERROR;
   }
-
-  LOG_INF("OTA", "Update completed");
-  return OK;
+  processedSize = 0;
+  LOG_INF(kTag, "Installing %s (%lld B) from %s", offer.version.c_str(), static_cast<long long>(offer.size),
+          origin.c_str());
+  lastError = xs::installOffer(offer, *port);
+  if (lastError != xs::Error::None) {
+    LOG_ERR(kTag, "Firmware install failed: %s", xs::errorCode(lastError));
+  }
+  switch (lastError) {
+    case xs::Error::None:
+      LOG_INF(kTag, "Update completed");
+      return OK;
+    case xs::Error::WrongDevice:
+      return WRONG_DEVICE_ERROR;
+    case xs::Error::Hash:
+      return HASH_ERROR;
+    case xs::Error::Flash:
+      return INTERNAL_UPDATE_ERROR;
+    case xs::Error::LowMemory:
+      return OOM_ERROR;
+    default:
+      return HTTP_ERROR;
+  }
 }

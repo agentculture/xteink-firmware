@@ -23,6 +23,9 @@ jobs:
         run: python3 scripts/xteink-check-services.py
       - name: Pinned CA bundle
         run: python3 test/test_xteink_ca_bundle.py
+      - name: Flash layout and SDK pointer pins
+        # partitions.csv byte-identical to feat/issue-1, freeink-sdk gitlink pinned.
+        run: python3 scripts/xteink-check-footprint.py
 
   build:
     name: Xteink build ${{ matrix.env }}
@@ -35,6 +38,8 @@ jobs:
         include:
           - env: default   # ESP32-C3: Xteink X3 + X4 (one image, runtime-detected)
             asset: firmware.bin
+          - env: xteink_release  # ESP32-C3 release image, version <base>+xteink.<sha8>
+            asset: firmware-xteink-release.bin
           - env: x4pro     # ESP32-S3: Xteink X4 Pro
             asset: firmware-x4pro.bin
           - env: x4c       # ESP32-S3: Xteink X4 Classic
@@ -91,6 +96,20 @@ jobs:
         run: |
           set -euo pipefail
           pio run -e ${{ matrix.env }} | tee pio.log
+
+      - name: Image fits the OTA slot with headroom
+        # Only the C3 X3/X4 images are gated: they must fit app0 (0x640000) with >= 5% free.
+        if: matrix.env == 'default' || matrix.env == 'xteink_release'
+        run: python3 scripts/xteink-check-footprint.py --only image --image .pio/build/${{ matrix.env }}/firmware.bin
+
+      - name: Release image carries its commit in the version
+        # OTA, the rolled-back record and the health check tell builds apart by version.
+        if: matrix.env == 'xteink_release'
+        run: |
+          set -euo pipefail
+          want="$(python3 scripts/xteink_release_version.py)"
+          echo "expected version: ${want}"
+          grep -aqF "xteink-fw ${want}" .pio/build/xteink_release/firmware.bin
 
       - name: Extract firmware stats
         run: |

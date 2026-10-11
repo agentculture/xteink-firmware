@@ -62,6 +62,10 @@ const char* errorCode(const Error e) {
       return "EDL";
     case Error::Cancelled:
       return "ECANCEL";
+    case Error::WrongDevice:
+      return "EDEV";
+    case Error::Flash:
+      return "EFLASH";
   }
   return "EHTTP";
 }
@@ -171,6 +175,11 @@ std::string buildStatusJson(const StatusReport& report) {
     o["sha256"] = e.sha256;
     o["unmodified"] = e.unmodified;
   }
+  if (!report.rolledBackVersion.empty()) doc["rolled_back_version"] = report.rolledBackVersion;
+  if (!report.run.startedAt.empty()) doc["run_started_at"] = report.run.startedAt;
+  if (!report.run.trigger.empty()) doc["run_trigger"] = report.run.trigger;
+  if (!report.run.fwOutcome.empty()) doc["fw_outcome"] = report.run.fwOutcome;
+  if (!report.run.contentOutcome.empty()) doc["content_outcome"] = report.run.contentOutcome;
   std::string out;
   serializeJson(doc, out);
   return out;
@@ -409,6 +418,206 @@ bool formatStatusLine(const LastResult& r, const StatusTemplates& t, char* buf, 
     snprintf(buf, len, "%s", t.okNoTime);
   }
   return true;
+}
+
+// --- firmware offer --------------------------------------------------------
+
+bool parseStatusResponse(const char* json, const size_t len, FirmwareOffer& offer) {
+  offer = FirmwareOffer{};
+  JsonDocument doc;
+  if (deserializeJson(doc, json, len) != DeserializationError::Ok) return false;
+  if (!doc.is<JsonObjectConst>()) return false;
+  JsonVariantConst fw = doc["firmware"];
+  if (!fw.is<JsonObjectConst>()) return true;  // absent or null: no offer
+  if (!fw["version"].is<const char*>() || !fw["size"].is<int64_t>() || !fw["sha256"].is<const char*>() ||
+      !fw["url"].is<const char*>()) {
+    return true;
+  }
+  FirmwareOffer o;
+  o.version = fw["version"].as<const char*>();
+  o.size = fw["size"].as<int64_t>();
+  o.sha256 = lower(fw["sha256"].as<const char*>());
+  o.url = fw["url"].as<const char*>();
+  // The device key goes with the download, so the image must come from the
+  // same origin as this response (root-relative path only).
+  if (o.version.empty() || o.version.size() > kMaxFirmwareVersionLen || o.size <= 0 || !isSha256Hex(o.sha256) ||
+      !isRootRelativePath(o.url)) {
+    return true;
+  }
+  o.present = true;
+  offer = std::move(o);
+  return true;
+}
+
+std::string buildFirmwareCheckJson(const std::string& firmwareVersion, const std::string& rolledBackVersion) {
+  JsonDocument doc;
+  doc["firmware_version"] = firmwareVersion;
+  if (!rolledBackVersion.empty()) doc["rolled_back_version"] = rolledBackVersion;
+  std::string out;
+  serializeJson(doc, out);
+  return out;
+}
+
+namespace {
+std::string stripFirmwarePrefix(const std::string& v) {
+  static constexpr char kPrefix[] = "xteink-fw ";
+  constexpr size_t kPrefixLen = sizeof(kPrefix) - 1;
+  return v.compare(0, kPrefixLen, kPrefix) == 0 ? v.substr(kPrefixLen) : v;
+}
+}  // namespace
+
+bool sameFirmwareVersion(const std::string& offered, const std::string& running) {
+  return stripFirmwarePrefix(offered) == stripFirmwarePrefix(running);
+}
+
+std::string firmwareReportVersion(const std::string& version) { return "xteink-fw " + stripFirmwarePrefix(version); }
+
+namespace {
+std::vector<std::string> splitLines(const std::string& s) {
+  std::vector<std::string> out;
+  size_t start = 0;
+  while (start < s.size()) {
+    size_t end = s.find('\n', start);
+    if (end == std::string::npos) end = s.size();
+    if (end > start) out.push_back(s.substr(start, end - start));
+    start = end + 1;
+  }
+  return out;
+}
+}  // namespace
+
+bool rolledBackListContains(const std::string& stored, const std::string& version) {
+  if (stripFirmwarePrefix(version).empty()) return false;
+  const std::vector<std::string> list = splitLines(stored);
+  return std::any_of(list.begin(), list.end(),
+                     [&version](const std::string& v) { return sameFirmwareVersion(v, version); });
+}
+
+std::string rolledBackListAdd(const std::string& stored, const std::string& version) {
+  const std::string v = firmwareReportVersion(version);
+  if (stripFirmwarePrefix(version).empty() || v.size() > kMaxFirmwareVersionLen + 10 ||
+      v.find('\n') != std::string::npos) {
+    return stored;
+  }
+  std::string out = v;
+  size_t kept = 1;
+  for (const std::string& old : splitLines(stored)) {
+    if (kept >= kMaxRolledBackBuilds) break;
+    if (sameFirmwareVersion(old, v)) continue;
+    out += '\n';
+    out += old;
+    ++kept;
+  }
+  return out;
+}
+
+const char* otaDecisionName(const OtaDecision d) {
+  switch (d) {
+    case OtaDecision::None:
+      return "none";
+    case OtaDecision::Current:
+      return "current";
+    case OtaDecision::Install:
+      return "install";
+    case OtaDecision::Deferred:
+      return "deferred:tunnel";
+    case OtaDecision::RolledBack:
+      return "deferred:rolled_back";
+  }
+  return "none";
+}
+
+OtaDecision decideOta(const FirmwareOffer& offer, const std::string& runningVersion, const bool viaTunnel,
+                      const bool tunnelOtaEnabled, const std::string& rolledBackList) {
+  if (!offer.present) return OtaDecision::None;
+  if (sameFirmwareVersion(offer.version, runningVersion)) return OtaDecision::Current;
+  // A build that already failed here stays out until the server offers another.
+  if (rolledBackListContains(rolledBackList, offer.version)) return OtaDecision::RolledBack;
+  if (viaTunnel && !tunnelOtaEnabled) return OtaDecision::Deferred;
+  return OtaDecision::Install;
+}
+
+bool isLanOrigin(const std::string& origin, const std::string& lanUrl) {
+  const std::string lan = normalizeOrigin(lanUrl.empty() ? kDefaultLanUrl : lanUrl);
+  return !lan.empty() && origin == lan;
+}
+
+Error installOffer(const FirmwareOffer& offer, OtaPort& port) {
+  if (!offer.present || offer.size <= 0 || !isSha256Hex(offer.sha256)) return Error::BadResponse;
+  const auto expected = static_cast<size_t>(offer.size);
+  if (!port.otaBegin()) return Error::Flash;
+  bool begun = true;
+  port.hashReset();
+  port.guardReset();
+
+  size_t written = 0;
+  bool tooLong = false;
+  bool wrongDevice = false;
+  bool flashFailed = false;
+  OtaSink sink;
+  sink.write = [&](const uint8_t* data, const size_t len) {
+    if (len > expected - written) {
+      tooLong = true;
+      return false;
+    }
+    if (!port.guardFeed(data, len)) {
+      wrongDevice = true;
+      return false;
+    }
+    if (!port.otaWrite(data, len)) {
+      flashFailed = true;
+      return false;
+    }
+    // Hash exactly what reached the slot.
+    port.hashUpdate(data, len);
+    written += len;
+    port.progress(written, expected);
+    return true;
+  };
+  // esp_ota_write is append-only: a restarted body needs a fresh slot session.
+  sink.rewind = [&] {
+    port.otaAbort();
+    begun = port.otaBegin();
+    if (!begun) {
+      flashFailed = true;
+      return false;
+    }
+    port.hashReset();
+    port.guardReset();
+    written = 0;
+    return true;
+  };
+
+  const OtaFetchResult r = port.fetch(sink);
+  Error err = Error::None;
+  if (wrongDevice) {
+    err = Error::WrongDevice;
+  } else if (flashFailed) {
+    err = Error::Flash;
+  } else if (r.aborted) {
+    err = Error::Cancelled;
+  } else if (r.status < 200 || r.status >= 300) {
+    err = errorForStatus(r.status);
+    if (err == Error::None) err = Error::Download;
+  } else if (tooLong || !r.complete || written != expected) {
+    err = Error::Download;
+  } else if (port.hashHex() != offer.sha256) {
+    err = Error::Hash;
+  }
+  if (err != Error::None) {
+    if (begun) port.otaAbort();
+    return err;
+  }
+  // esp_ota_end releases the handle whether or not the image validates.
+  if (!port.otaEnd()) return Error::Flash;
+  // Recorded before the switch: from here on the next boot may run the new
+  // image, and if it dies before its health check the old image reports it.
+  port.recordCandidate();
+  if (!port.setBootPartition()) {
+    port.clearCandidate();
+    return Error::Flash;
+  }
+  return Error::None;
 }
 
 }  // namespace xteink::sync
