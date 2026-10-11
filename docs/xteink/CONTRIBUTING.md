@@ -11,7 +11,9 @@ against `upstream/develop` inside these areas:
   server URLs and the device key.
 - **Sync client**: a new module implementing the xteink device protocol v1,
   plus minimal hooks to start it.
-- **OTA source**: updates come from this fork's releases, never upstream's.
+- **OTA source**: on provisioned devices, updates come only from the xteink
+  server's firmware offer (`docs/xteink/tls.md`, "OTA source"), never from
+  upstream's or this fork's GitHub releases.
 - **TLS verification**: verified HTTPS for sync, no `setInsecure()`.
 - **SD free space**: the read-only `HalStorage::sdFreeBytes()` accessor in
   `lib/hal` (mutex-guarded wrapper over the SDK's cached sizes, used for the

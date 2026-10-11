@@ -91,7 +91,7 @@ RULES: list[tuple[str, str, set[str]]] = [
     ),
 ]
 
-# (description, regex, files that must never contain it) -- t13 TLS/OTA pins.
+# (description, regex, files that must never contain it) -- TLS/OTA pins.
 FORBIDDEN: list[tuple[str, str, set[str]]] = [
     (
         "unverified TLS in the shared downloader (sync, OPDS, OTA)",
@@ -103,7 +103,16 @@ FORBIDDEN: list[tuple[str, str, set[str]]] = [
         r"crosspoint-reader/crosspoint-reader/releases",
         {"src/network/OtaUpdater.cpp", "src/network/OtaUpdater.h"},
     ),
+    (
+        # OTA comes only from the provisioned xteink server (docs/xteink/tls.md, "OTA source").
+        "GitHub releases OTA source",
+        r"api\.github\.com",
+        {"src/network/OtaUpdater.cpp", "src/network/OtaUpdater.h"},
+    ),
 ]
+
+# Forbidden patterns matched on comment lines too (a grep for them must come up empty).
+FORBIDDEN_EVEN_IN_COMMENTS = {"GitHub releases OTA source"}
 
 COMMENT_LINE = re.compile(r"^\s*(//|\*|/\*)")
 # Function declarations ("void goToFileTransfer();") name a call site's target,
@@ -132,7 +141,8 @@ def scan() -> list[str]:
             if not path.is_file():
                 continue
             for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
-                if not COMMENT_LINE.match(line) and pattern.search(line):
+                skip_comment = desc not in FORBIDDEN_EVEN_IN_COMMENTS and COMMENT_LINE.match(line)
+                if not skip_comment and pattern.search(line):
                     errors.append(f"{rel}:{lineno}: {desc}: {line.strip()}")
     return errors
 
