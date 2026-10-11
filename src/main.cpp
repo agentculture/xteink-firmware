@@ -46,6 +46,7 @@
 #include "util/ScreenshotUtil.h"
 #include "util/Timezones.h"
 #include "xteink/KeyDiag.h"
+#include "xteink/OtaHealth.h"
 #include "xteink/ProvisioningProtocol.h"
 #include "xteink/ResetBoot.h"
 
@@ -515,6 +516,7 @@ void setup() {
   if (!Storage.begin()) {
     LOG_ERR("MAIN", "SD card initialization failed");
     setupDisplayAndFonts(isSilentReboot);
+    xteink::otahealth::onBoot(display.getFrameBuffer() != nullptr, /*sdOk=*/false);  // xteink: rolls back a new image
     activityManager.goToFullScreenMessage("SD card error", EpdFontFamily::BOLD);
     return;
   }
@@ -639,6 +641,9 @@ void setup() {
       activityManager.goToBoot();
       break;
   }
+
+  // xteink: first boot after an OTA keeps the image only if it reaches the server (OtaHealth.h).
+  xteink::otahealth::onBoot(display.getFrameBuffer() != nullptr, /*sdOk=*/true);
 
   // Output polarity is resolved per render by ActivityManager (night mode
   // inverts only the reading surfaces), so nothing to restore here.

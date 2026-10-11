@@ -95,6 +95,9 @@ struct StatusReport {
   std::string lastError;       // "" = null
   std::string lastSyncResult;  // "" = null
   std::vector<InventoryEntry> inventory;
+  // Image the device rolled back from after a failed post-update health check
+  // (OtaHealth.h), in the firmware_version form. "" = omit the field.
+  std::string rolledBackVersion;
 };
 
 std::string buildStatusJson(const StatusReport& report);
@@ -230,9 +233,10 @@ struct FirmwareOffer {
 // an error: `offer.present` stays false.
 bool parseStatusResponse(const char* json, size_t len, FirmwareOffer& offer);
 
-// Status body for an offer check: only firmware_version. Every status field is
-// optional, so the stored inventory, last_error and last_sync_result are kept.
-std::string buildFirmwareCheckJson(const std::string& firmwareVersion);
+// Status body for an offer check: only firmware_version, plus
+// rolled_back_version when non-empty. Every status field is optional, so the
+// stored inventory, last_error and last_sync_result are kept.
+std::string buildFirmwareCheckJson(const std::string& firmwareVersion, const std::string& rolledBackVersion = "");
 
 // Offered and running versions name the same build. A "xteink-fw " prefix (the
 // form the status report sends) is ignored on either side.
