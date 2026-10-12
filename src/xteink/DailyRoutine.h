@@ -8,6 +8,7 @@
 // earlier than the most recent 06:00, the routine runs once:
 //
 //   battery floors -> Wi-Fi join -> OTA check (and install) -> book sync
+//     -> RTC from SNTP
 //
 // A firmware branch that cannot finish unattended (tunnel-only offer, battery
 // below the OTA floor, an install already tried today) never blocks the books:
@@ -192,6 +193,15 @@ class RoutinePort {
   // Blocking SNTP over the joined station; the synced epoch or 0.
   virtual int64_t syncClock(uint32_t budgetMs) = 0;
   virtual std::string timezone() = 0;  // POSIX rule for the boundary
+  // The background SNTP started by the join has answered (the system clock is
+  // network time). Must not rely on sntp_get_sync_status() alone: reading it
+  // clears COMPLETED, so an earlier reader may have consumed it.
+  virtual bool sntpCompleted() = 0;
+  // Waits up to budgetMs for that answer; false at once when SNTP never started.
+  virtual bool waitSntp(uint32_t budgetMs) = 0;
+  // Writes a UTC epoch to the board's RTC (HalClock::setUtc: no TZ change).
+  // False when there is no RTC or the write failed.
+  virtual bool writeRtc(int64_t epoch) = 0;
 
   // Network.
   virtual bool wifiConnected() = 0;
@@ -243,6 +253,9 @@ struct Result {
   int64_t boundary = 0;  // most recent 06:00 (0 = not computed)
   sync::RunFields fields;
   sync::Outcome sync;
+  // The RTC got the SNTP time before the radio went off (serial log only; not
+  // part of the status report).
+  bool rtcWritten = false;
 };
 
 // Runs the whole routine against `port`. Never waits on button input. The

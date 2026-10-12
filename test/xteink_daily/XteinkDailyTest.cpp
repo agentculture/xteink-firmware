@@ -89,6 +89,11 @@ class FakePort : public RoutinePort {
   bool checkHonorsBudget = true;
   // false: the sync's status POST got no 2xx, so "fw_verified" is not cleared.
   bool statusDelivered = true;
+  // SNTP after the join: answered already, or answers this many ms into a
+  // waitSntp() (never when sntpAnswersAfterMs is UINT32_MAX).
+  bool sntpDone = true;
+  uint32_t sntpAnswersAfterMs = UINT32_MAX;
+  bool rtcWriteOk = true;
 
   // State (NVS and radio).
   uint32_t now = 0xFFFFF000u;  // near the 49-day wrap on purpose
@@ -116,6 +121,10 @@ class FakePort : public RoutinePort {
   uint32_t startMs = now;
   sync::RunFields syncFields;
   int64_t adopted = 0;
+  int sntpWaits = 0;
+  uint32_t lastSntpWaitBudget = 0;
+  int rtcWrites = 0;
+  int64_t rtcWrittenEpoch = 0;
 
   uint32_t millis() override { return now; }
   bool provisioned() override { return key; }
@@ -132,7 +141,27 @@ class FakePort : public RoutinePort {
     ++sntpCalls;
     events.push_back("sntp");
     now += budgetMs < 500 ? budgetMs : 500;
+    if (sntp >= kMinPlausibleEpoch) systemClock = sntp;  // SNTP set the system clock
     return sntp;
+  }
+  bool sntpCompleted() override { return sntpDone; }
+  bool waitSntp(const uint32_t budgetMs) override {
+    ++sntpWaits;
+    lastSntpWaitBudget = budgetMs;
+    events.push_back("sntp-wait");
+    if (sntpAnswersAfterMs <= budgetMs) {
+      now += sntpAnswersAfterMs;
+      sntpDone = true;
+      return true;
+    }
+    now += budgetMs;
+    return false;
+  }
+  bool writeRtc(const int64_t epoch) override {
+    ++rtcWrites;
+    rtcWrittenEpoch = epoch;
+    events.push_back("rtc");
+    return rtcWriteOk;
   }
   std::string timezone() override { return tz; }
   bool wifiConnected() override { return connected; }
@@ -207,6 +236,7 @@ class FakePort : public RoutinePort {
     rebooted = false;
     events.clear();
     joinCalls = syncCalls = installCalls = checkCalls = sntpCalls = setLastRunCalls = 0;
+    sntpWaits = rtcWrites = 0;
     startMs = now;
   }
 };
@@ -1001,6 +1031,191 @@ TEST(DailyCap, JoinIsBoundedByItsBudget) {
   EXPECT_EQ(run(p, Trigger::PowerOn).status, Status::SkippedNoWifi);
   EXPECT_LE(p.now - p.startMs, kJoinBudgetMs);
   EXPECT_EQ(p.setLastRunCalls, 0);
+}
+
+// --- the RTC follows SNTP after the daily sync -------------------------------------------
+
+namespace {
+// Events from `from` on, in order.
+std::vector<std::string> tail(const std::vector<std::string>& events, const std::string& from) {
+  std::vector<std::string> out;
+  bool on = false;
+  for (const auto& e : events) {
+    on = on || e == from;
+    if (on) out.push_back(e);
+  }
+  return out;
+}
+}  // namespace
+
+TEST(DailyRtc, AlreadySyncedWritesTheRtcWithoutWaiting) {
+  FakePort p = dueDevice();
+  p.sntpDone = true;
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(r.status, Status::Ran);
+  EXPECT_TRUE(r.rtcWritten);
+  EXPECT_EQ(p.sntpWaits, 0);
+  EXPECT_EQ(p.rtcWrites, 1);
+  EXPECT_EQ(p.rtcWrittenEpoch, p.systemClock);
+  // After the sync and last_run, before the radio goes off.
+  EXPECT_EQ(tail(p.events, "sync"), (std::vector<std::string>{"sync", "last_run", "rtc", "wifi-off"}));
+}
+
+TEST(DailyRtc, ALateAnswerWithinTheBudgetIsWaitedForThenWritten) {
+  FakePort p = dueDevice();
+  p.sntpDone = false;
+  p.sntpAnswersAfterMs = 3000;
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(r.status, Status::Ran);
+  EXPECT_TRUE(r.rtcWritten);
+  EXPECT_EQ(p.sntpWaits, 1);
+  EXPECT_EQ(p.lastSntpWaitBudget, kClockSyncBudgetMs);
+  EXPECT_EQ(p.rtcWrites, 1);
+  EXPECT_EQ(tail(p.events, "sync"), (std::vector<std::string>{"sync", "last_run", "sntp-wait", "rtc", "wifi-off"}));
+  EXPECT_LE(p.now - p.startMs, kDailyRoutineCapMs);
+}
+
+TEST(DailyRtc, ATimeoutLeavesTheRtcAndTheRunUntouched) {
+  FakePort base = dueDevice();
+  const Result want = run(base, Trigger::PowerOn);
+
+  FakePort p = dueDevice();
+  p.sntpDone = false;  // never answers
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_FALSE(r.rtcWritten);
+  EXPECT_EQ(p.sntpWaits, 1);
+  EXPECT_EQ(p.lastSntpWaitBudget, kClockSyncBudgetMs);
+  EXPECT_EQ(p.rtcWrites, 0);
+  EXPECT_FALSE(p.connected);  // the radio is still released
+  // Status and every reported outcome are those of a run whose RTC was written.
+  EXPECT_EQ(r.status, want.status);
+  EXPECT_EQ(r.clock, want.clock);
+  EXPECT_EQ(r.now, want.now);
+  EXPECT_EQ(r.fields.fwOutcome, want.fields.fwOutcome);
+  EXPECT_EQ(r.fields.contentOutcome, want.fields.contentOutcome);
+  EXPECT_EQ(r.fields.startedAt, want.fields.startedAt);
+  EXPECT_EQ(r.fields.trigger, want.fields.trigger);
+  EXPECT_EQ(p.syncFields.fwOutcome, base.syncFields.fwOutcome);
+  EXPECT_EQ(p.setLastRunCalls, 1);
+  EXPECT_EQ(p.lastRunValue, base.lastRunValue);
+
+  // A failed RTC write is reported as not written; nothing else changes.
+  FakePort q = dueDevice();
+  q.rtcWriteOk = false;
+  const Result rq = run(q, Trigger::PowerOn);
+  EXPECT_EQ(rq.status, Status::Ran);
+  EXPECT_EQ(q.rtcWrites, 1);
+  EXPECT_FALSE(rq.rtcWritten);
+}
+
+TEST(DailyRtc, TheWaitIsClippedToWhatIsLeftOfTheCap) {
+  FakePort p = dueDevice();
+  p.sntpDone = false;
+  p.syncCostMs = 1000000;  // the sync runs to its hard budget, leaving 0
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(r.status, Status::Ran);
+  EXPECT_EQ(p.sntpWaits, 0);  // nothing left: no wait at all
+  EXPECT_FALSE(r.rtcWritten);
+  EXPECT_LE(p.now - p.startMs, kDailyRoutineCapMs);
+
+  // 2 s left of the cap: the wait gets 2 s, not 8 s.
+  FakePort q = dueDevice();
+  q.sntpDone = false;
+  q.joinCostMs = 3000;
+  q.checkCostMs = 1000;
+  q.syncCostMs = kDailyRoutineCapMs - 3000 - 1000 - 2000;
+  const Result rq = run(q, Trigger::PowerOn);
+  EXPECT_EQ(rq.status, Status::Ran);
+  EXPECT_EQ(q.sntpWaits, 1);
+  EXPECT_EQ(q.lastSntpWaitBudget, 2000u);
+  EXPECT_LE(q.now - q.startMs, kDailyRoutineCapMs);
+}
+
+TEST(DailyRtc, ANetworkClockIsWrittenWithoutWaiting) {
+  // The routine's own SNTP sync set the clock (and may have consumed the
+  // COMPLETED status): no second wait. Not due today, but the radio was up.
+  FakePort p = dueDevice();
+  p.bootClock = 0;
+  p.systemClock = utc(2026, 10, 1);
+  p.floor = utc(2026, 10, 1);
+  p.sntp = utc(2026, 10, 11, 5);
+  p.lastRunValue = utc(2026, 10, 11, 4);  // already ran after today's 06:00
+  p.sntpDone = false;
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(r.clock, ClockSource::Network);
+  EXPECT_EQ(r.status, Status::NotDue);
+  EXPECT_EQ(p.sntpWaits, 0);
+  EXPECT_TRUE(r.rtcWritten);
+  EXPECT_EQ(p.rtcWrittenEpoch, p.sntp);
+}
+
+TEST(DailyRtc, ARunWithoutWiFiNeverWaitsOrWrites) {
+  // Joined nothing: no SNTP was started.
+  FakePort p = dueDevice();
+  p.sntpDone = false;
+  p.joinOk = false;
+  EXPECT_EQ(run(p, Trigger::PowerOn).status, Status::SkippedNoWifi);
+  EXPECT_EQ(p.sntpWaits, 0);
+  EXPECT_EQ(p.rtcWrites, 0);
+
+  // Not due on a trusted local clock: the radio is never touched.
+  FakePort q = dueDevice();
+  q.sntpDone = false;
+  q.lastRunValue = utc(2026, 10, 11, 4);
+  EXPECT_EQ(run(q, Trigger::PowerOn).status, Status::NotDue);
+  EXPECT_EQ(q.sntpWaits, 0);
+  EXPECT_EQ(q.rtcWrites, 0);
+
+  // Low battery: skipped before any join.
+  FakePort b = dueDevice();
+  b.battery = kDailyJoinBatteryFloor - 1;
+  EXPECT_EQ(run(b, Trigger::PowerOn).status, Status::SkippedLowBattery);
+  EXPECT_EQ(b.rtcWrites, 0);
+}
+
+TEST(DailyRtc, AFailedClockSyncDoesNotWaitAgain) {
+  // SNTP already had its budget inside establishClock.
+  FakePort p = dueDevice();
+  p.bootClock = 0;
+  p.systemClock = 0;
+  p.sntp = 0;
+  p.sntpDone = false;
+  EXPECT_EQ(run(p, Trigger::PowerOn).status, Status::SkippedNoClock);
+  EXPECT_EQ(p.sntpWaits, 0);
+  EXPECT_EQ(p.rtcWrites, 0);
+  EXPECT_FALSE(p.connected);
+}
+
+TEST(DailyRtc, AnImplausibleSystemClockIsNeverWritten) {
+  // Defensive: SNTP reports an answer but the system clock reads near epoch 0
+  // (the decision used the RTC; the fake's adoptClock does not move it).
+  FakePort p = dueDevice();
+  p.bootClock = 0;
+  p.systemClock = 1000;
+  p.rtc = utc(2026, 10, 11, 5);
+  p.sntpDone = true;
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(r.clock, ClockSource::Rtc);
+  EXPECT_EQ(r.status, Status::Ran);
+  EXPECT_EQ(p.rtcWrites, 0);
+  EXPECT_FALSE(r.rtcWritten);
+}
+
+TEST(DailyRtc, AnInstallRebootWritesOnlyAnAnsweredClockWithoutWaiting) {
+  FakePort p = dueDevice();
+  p.ota = {sync::OtaDecision::Install, sync::Error::None};
+  p.sntpDone = true;
+  EXPECT_EQ(run(p, Trigger::PowerOn).status, Status::Rebooting);
+  EXPECT_EQ(p.rtcWrites, 1);
+  EXPECT_EQ(tail(p.events, "rtc"), (std::vector<std::string>{"rtc", "wifi-off", "reboot"}));
+
+  FakePort q = dueDevice();
+  q.ota = {sync::OtaDecision::Install, sync::Error::None};
+  q.sntpDone = false;
+  q.sntpAnswersAfterMs = 1;
+  EXPECT_EQ(run(q, Trigger::PowerOn).status, Status::Rebooting);
+  EXPECT_EQ(q.sntpWaits, 0);  // the reboot is not held up
+  EXPECT_EQ(q.rtcWrites, 0);
 }
 
 // --- outcome strings and the status line ----------------------------------------------
