@@ -87,6 +87,8 @@ class FakePort : public RoutinePort {
   // false: the join overruns its budget (a misbehaving radio).
   bool joinHonorsBudget = true;
   bool checkHonorsBudget = true;
+  // false: the sync's status POST got no 2xx, so "fw_verified" is not cleared.
+  bool statusDelivered = true;
 
   // State (NVS and radio).
   uint32_t now = 0xFFFFF000u;  // near the 49-day wrap on purpose
@@ -95,6 +97,7 @@ class FakePort : public RoutinePort {
   int64_t otaDayValue = 0;
   uint8_t otaCountValue = 0;
   Note savedNote = Note::None;
+  bool verified = false;  // "fw_verified", set by a passed health check
   bool rebooted = false;
 
   // Observations.
@@ -154,6 +157,7 @@ class FakePort : public RoutinePort {
   void setOtaDay(const int64_t b) override { otaDayValue = b; }
   uint8_t otaCount() override { return otaCountValue; }
   void setOtaCount(const uint8_t n) override { otaCountValue = n; }
+  bool verifiedInstall() override { return verified; }
   Note note() override { return savedNote; }
   void setNote(const Note n) override { savedNote = n; }
   OtaCheck checkOta(const uint32_t budgetMs) override {
@@ -182,6 +186,7 @@ class FakePort : public RoutinePort {
                         const uint32_t hardBudgetMs) override {
     ++syncCalls;
     syncFields = fields;
+    if (statusDelivered && fields.fwOutcome == "installed") verified = false;
     lastItemBudget = itemBudgetMs;
     lastHardBudget = hardBudgetMs;
     syncStartedAtElapsed = now - startMs;
@@ -765,14 +770,16 @@ TEST(DailyOta, InstallRebootsWithoutLastRunThenReportsInstalled) {
   EXPECT_EQ(p.otaCountValue, 1);
   EXPECT_FALSE(p.connected);
 
-  // New image: its health check passed (else it would have rolled back); the
-  // server now names the running build.
+  // New image: its health check passed (else it would have rolled back), and
+  // the server no longer offers the build the device runs.
   p.nextBoot(p.systemClock + 60);
-  p.ota = {sync::OtaDecision::Current, sync::Error::None};
+  p.verified = true;
+  p.ota = {sync::OtaDecision::None, sync::Error::None};
   r = run(p, Trigger::PowerOn);
   EXPECT_EQ(r.status, Status::Ran);
   EXPECT_EQ(r.fields.fwOutcome, "installed");
   EXPECT_EQ(p.syncFields.fwOutcome, "installed");
+  EXPECT_FALSE(p.verified);
   EXPECT_EQ(p.installCalls, 0);
   EXPECT_EQ(p.syncCalls, 1);
   EXPECT_EQ(p.setLastRunCalls, 1);
@@ -786,14 +793,89 @@ TEST(DailyOta, AStationLeftUpByThePassedHealthCheckIsReusedThenReleased) {
   // no second join, and the routine still turns the radio off at the end.
   FakePort p = dueDevice();
   p.connected = true;
+  p.verified = true;
   p.otaCountValue = 1;
   p.otaDayValue = mostRecentBoundary(p.systemClock, kJerusalem);
-  p.ota = {sync::OtaDecision::Current, sync::Error::None};
+  p.ota = {sync::OtaDecision::None, sync::Error::None};
   const Result r = run(p, Trigger::PowerOn);
   EXPECT_EQ(r.status, Status::Ran);
   EXPECT_EQ(r.fields.fwOutcome, "installed");
   EXPECT_EQ(p.joinCalls, 0);
   EXPECT_FALSE(p.connected);
+}
+
+TEST(DailyOta, AVerifiedInstallIsReportedWhateverTheServerStillOffers) {
+  for (const sync::OtaDecision d : {sync::OtaDecision::None, sync::OtaDecision::Current, sync::OtaDecision::Deferred,
+                                    sync::OtaDecision::RolledBack}) {
+    FakePort p = dueDevice();
+    p.verified = true;
+    p.ota = {d, sync::Error::None};
+    const Result r = run(p, Trigger::PowerOn);
+    EXPECT_EQ(r.status, Status::Ran);
+    EXPECT_EQ(r.fields.fwOutcome, "installed");
+    EXPECT_EQ(p.syncFields.fwOutcome, "installed");
+    EXPECT_EQ(p.installCalls, 0);
+    EXPECT_FALSE(p.verified);
+  }
+}
+
+TEST(DailyOta, AVerifiedInstallOutranksADeferredNewerOffer) {
+  FakePort p = dueDevice();
+  p.verified = true;
+  p.battery = kDailyOtaBatteryFloor - 1;
+  p.ota = {sync::OtaDecision::Install, sync::Error::None};
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(r.status, Status::Ran);
+  EXPECT_EQ(r.fields.fwOutcome, "installed");
+  EXPECT_EQ(p.installCalls, 0);
+  EXPECT_EQ(p.savedNote, Note::FirmwarePending);  // the newer build is still outstanding
+}
+
+TEST(DailyOta, AFailedInstallThisRunOutranksAnEarlierVerifiedOne) {
+  FakePort p = dueDevice();
+  p.verified = true;
+  p.ota = {sync::OtaDecision::Install, sync::Error::None};
+  p.installResult = sync::Error::Flash;
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(r.status, Status::Ran);
+  EXPECT_EQ(r.fields.fwOutcome, "failed:EFLASH");
+  EXPECT_TRUE(p.verified);  // still to be reported
+}
+
+TEST(DailyOta, AVerifiedInstallSurvivesARunThatCouldNotReportIt) {
+  // The boot after the install: the health check passed, but the routine
+  // cannot reach the server. The marker waits for the next run that can.
+  FakePort p = dueDevice();
+  p.verified = true;
+  p.joinOk = false;
+  EXPECT_EQ(run(p, Trigger::PowerOn).status, Status::SkippedNoWifi);
+  EXPECT_TRUE(p.verified);
+
+  p.nextBoot(p.systemClock + 600);
+  p.joinOk = true;
+  p.statusDelivered = false;
+  p.ota = {sync::OtaDecision::None, sync::Error::None};
+  Result r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(r.fields.fwOutcome, "installed");
+  EXPECT_TRUE(p.verified);  // no 2xx for the report
+
+  p.nextBoot(p.systemClock + 86400);  // the next routine-day
+  p.statusDelivered = true;
+  r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(r.status, Status::Ran);
+  EXPECT_EQ(r.fields.fwOutcome, "installed");
+  EXPECT_FALSE(p.verified);
+}
+
+TEST(DailyOta, NoOfferAfterAFailedAttemptIsNotAnInstall) {
+  // Today's attempt failed and the offer was withdrawn: nothing was verified.
+  FakePort p = dueDevice();
+  p.otaCountValue = 1;
+  p.otaDayValue = mostRecentBoundary(p.systemClock, kJerusalem);
+  p.ota = {sync::OtaDecision::None, sync::Error::None};
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(r.status, Status::Ran);
+  EXPECT_EQ(r.fields.fwOutcome, "none");
 }
 
 TEST(DailyOta, AnOfferThatKeepsComingBackCannotLoop) {

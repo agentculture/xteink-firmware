@@ -205,6 +205,9 @@ class RoutinePort {
   virtual void setOtaDay(int64_t boundary) = 0;
   virtual uint8_t otaCount() = 0;  // "ota_n": install attempts on that day
   virtual void setOtaCount(uint8_t n) = 0;
+  // "fw_verified": a post-update health check passed and no daily run has
+  // reported it yet (the sync clears it once the report is delivered).
+  virtual bool verifiedInstall() = 0;
   virtual Note note() = 0;              // "dr_note"
   virtual void setNote(Note note) = 0;  // "dr_note"
 

@@ -118,6 +118,7 @@ constexpr const char* kNvsNamespace = "xteink";  // shared with XteinkConfig/Xte
 constexpr const char* kNvsCandidate = "rb_cand";
 constexpr const char* kNvsRolledBack = "rb_version";
 constexpr const char* kNvsRolledBackList = "rb_list";
+constexpr const char* kNvsVerified = "fw_verified";
 constexpr size_t kMaxVersionLen = 96;
 // rb_list: kMaxRolledBackBuilds report-form versions, newline-separated.
 constexpr size_t kMaxListLen = sync::kMaxRolledBackBuilds * (sync::kMaxFirmwareVersionLen + 11);
@@ -210,7 +211,11 @@ class DevicePort final : public HealthPort {
 
   void markValid() override {
     const esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
-    if (err != ESP_OK) LOG_ERR(kTag, "mark valid failed: %s", esp_err_to_name(err));
+    if (err != ESP_OK) {
+      LOG_ERR(kTag, "mark valid failed: %s", esp_err_to_name(err));
+      return;
+    }
+    nvsSet(kNvsVerified, kFirmwareVersion);
   }
   void markInvalidAndReboot() override {
     // Returns only when there is no image to roll back to.
@@ -267,6 +272,12 @@ bool takeCheckedOffer(sync::FirmwareOffer& offer, std::string& origin) {
 }
 
 std::string rolledBackVersion() { return nvsGet(kNvsRolledBack); }
+
+bool verifiedInstall() { return !nvsGet(kNvsVerified).empty(); }
+
+void clearVerifiedInstall() {
+  if (verifiedInstall()) nvsSet(kNvsVerified, "");
+}
 
 std::string rolledBackBuilds() { return nvsGet(kNvsRolledBackList, kMaxListLen); }
 

@@ -704,6 +704,7 @@ Outcome run(const GfxRenderer* renderer, const Callbacks& cb, const uint32_t ite
   }
   // Delivered: the closing report need not repeat it.
   otahealth::clearRolledBackVersion(report.rolledBackVersion);
+  if (report.run.fwOutcome == "installed") otahealth::clearVerifiedInstall();
   report.rolledBackVersion.clear();
 
   // 3. Queue.

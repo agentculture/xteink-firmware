@@ -449,8 +449,16 @@ class Routine {
   }
 
   // Sets result.fields.fwOutcome and `note` (left as is when nothing is learnt
-  // about the offer); true when an image was installed.
+  // about the offer); true when an image was installed. An image verified since
+  // the last report is this run's install, unless this run's own install failed.
   bool firmwareStep(const int battery, Note& note) {
+    bool installFailed = false;
+    const bool installing = checkAndInstall(battery, note, installFailed);
+    if (!installing && !installFailed && port.verifiedInstall()) result.fields.fwOutcome = kFwInstalled;
+    return installing;
+  }
+
+  bool checkAndInstall(const int battery, Note& note, bool& installFailed) {
     std::string& fw = result.fields.fwOutcome;
     if (remaining() <= kSyncReserveMs) {
       fw = kFwDeferredTime;
@@ -469,12 +477,8 @@ class Routine {
     note = Note::None;  // the server answered: the note follows its offer
     switch (check.decision) {
       case sync::OtaDecision::None:
-        fw = kFwNone;
-        return false;
       case sync::OtaDecision::Current:
-        // The image installed earlier this routine-day passed its health check
-        // (a failed one would have rolled back and still be offered).
-        fw = attempts > 0 ? kFwInstalled : kFwNone;
+        fw = kFwNone;
         return false;
       case sync::OtaDecision::Deferred:
         fw = kFwDeferredTunnel;
@@ -523,6 +527,7 @@ class Routine {
       return false;
     }
     // The offer is still outstanding.
+    installFailed = true;
     fw = fwFailed(e);
     note = Note::FirmwarePending;
     return false;
@@ -688,6 +693,7 @@ class DevicePort final : public RoutinePort {
   void setOtaCount(const uint8_t n) override {
     nvsWrite(kNvsOtaCount, [n](nvs_handle_t h) { return nvs_set_u8(h, kNvsOtaCount, n); });
   }
+  bool verifiedInstall() override { return otahealth::verifiedInstall(); }
   Note note() override { return homeNote(); }
   void setNote(const Note note) override {
     const auto b = static_cast<uint8_t>(note);
