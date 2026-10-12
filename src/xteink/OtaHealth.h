@@ -120,6 +120,10 @@ bool takeCheckedOffer(sync::FirmwareOffer& offer, std::string& origin);
 
 // rolled_back_version for the next status POST ("" when none).
 std::string rolledBackVersion();
+// True from a passed post-update health check until a daily run's status POST
+// reporting fw_outcome=installed gets a 2xx answer (clearVerifiedInstall()).
+bool verifiedInstall();
+void clearVerifiedInstall();
 // The persistent rolled-back record for decideOta() ("" when none).
 std::string rolledBackBuilds();
 // Installer side of the candidate bookkeeping (OtaUpdater, before and after
