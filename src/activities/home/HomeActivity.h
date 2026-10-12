@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <functional>
 #include <vector>
 
@@ -7,6 +8,7 @@
 #include "activities/Activity.h"
 #include "components/CoverGridHomeUi.h"
 #include "util/ButtonNavigator.h"
+#include "xteink/ClockTick.h"
 
 struct Rect;
 
@@ -14,6 +16,8 @@ class HomeActivity final : public Activity {
   std::unique_ptr<CoverGridHomeUi> coverGridUi;
   ButtonNavigator buttonNavigator;
   int selectorIndex = 0;
+  xteink::clocktick::State clockTick;         // main task only (loop/onEnter)
+  std::atomic<bool> clockHalfPending{false};  // set by loop(), consumed by the render task
   bool recentsLoading = false;
   bool recentsLoaded = false;
   bool firstRenderDone = false;
