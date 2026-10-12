@@ -95,11 +95,18 @@ void startSync() {
 bool syncNow(const uint32_t timeoutMs) {
   // configureSntp() (configTzTime) restarts SNTP if already running.
   configureSntp();
+  // ESP-IDF clears COMPLETED when it is read, so keep the loop's own reading;
+  // a second read after the loop would report a successful sync as failed.
   const unsigned long deadline = millis() + timeoutMs;
-  while (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED && static_cast<long>(deadline - millis()) > 0) {
+  bool synced = false;
+  for (;;) {
+    if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
+      synced = true;
+      break;
+    }
+    if (static_cast<long>(deadline - millis()) <= 0) break;
     delay(100);
   }
-  const bool synced = sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED;
   if (synced) note();
   return synced;
 }
