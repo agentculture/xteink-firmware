@@ -7,7 +7,26 @@
 
 HalClock halClock;  // Singleton instance
 
+namespace {
+// RAII lock for a (possibly null) FreeRTOS mutex.
+class ClockLock {
+  SemaphoreHandle_t _m;
+
+ public:
+  explicit ClockLock(SemaphoreHandle_t m) : _m(m) {
+    if (_m) xSemaphoreTake(_m, portMAX_DELAY);
+  }
+  ~ClockLock() {
+    if (_m) xSemaphoreGive(_m);
+  }
+  ClockLock(const ClockLock&) = delete;
+  ClockLock& operator=(const ClockLock&) = delete;
+};
+}  // namespace
+
 void HalClock::begin() {
+  if (!_mutex) _mutex = xSemaphoreCreateMutex();
+  ClockLock lock(_mutex);
   _available = _sdkRtc.begin();
   LOG_INF("CLK", _available ? "SDK RTC found" : "RTC not found");
 }
@@ -29,6 +48,7 @@ time_t epochFromUtc(const Rtc::DateTime& dt) {
 }  // namespace
 
 void HalClock::setTimezone(const char* posixTz) {
+  ClockLock lock(_mutex);
   setenv("TZ", posixTz && posixTz[0] != '\0' ? posixTz : "UTC0", 1);
   tzset();
   _lastPollMs = 0;  // re-derive local time under the new rule immediately
@@ -37,6 +57,7 @@ void HalClock::setTimezone(const char* posixTz) {
 bool HalClock::localTime(struct tm& out) const {
   if (!_available) return false;
 
+  ClockLock lock(_mutex);
   const unsigned long now = millis();
   if (_lastPollMs == 0 || (now - _lastPollMs) >= CLOCK_POLL_MS) {
     Rtc::DateTime dt;
@@ -76,6 +97,39 @@ bool HalClock::formatTime(char* buf, size_t bufSize, bool use12Hour) const {
   return true;
 }
 
+bool HalClock::setUtc(int64_t epoch) {
+  if (!_available || epoch < 0) return false;
+
+  const time_t t = static_cast<time_t>(epoch);
+  struct tm timeinfo;
+  gmtime_r(&t, &timeinfo);  // UTC breakdown, no TZ involvement
+
+  Rtc::DateTime dt;
+  dt.year = static_cast<uint16_t>(timeinfo.tm_year + 1900);
+  dt.month = static_cast<uint8_t>(timeinfo.tm_mon + 1);
+  dt.day = static_cast<uint8_t>(timeinfo.tm_mday);
+  dt.hour = static_cast<uint8_t>(timeinfo.tm_hour);
+  dt.minute = static_cast<uint8_t>(timeinfo.tm_min);
+  dt.second = static_cast<uint8_t>(timeinfo.tm_sec);
+  dt.weekday = static_cast<uint8_t>(timeinfo.tm_wday);
+
+  bool ok;
+  {
+    ClockLock lock(_mutex);
+    ok = _sdkRtc.set(dt);
+    if (ok) {
+      _cachedUtc = epochFromUtc(dt);
+      _hasCachedTime = true;
+      _lastPollMs = 0;
+    }
+  }
+  if (ok) {
+    LOG_INF("CLK", "RTC set to %04u-%02u-%02u %02u:%02u:%02u UTC", dt.year, dt.month, dt.day, dt.hour, dt.minute,
+            dt.second);
+  }
+  return ok;
+}
+
 bool HalClock::syncFromNTP() {
   if (!_available) return false;
 
@@ -96,26 +150,7 @@ bool HalClock::syncFromNTP() {
   constexpr int maxAttempts = 50;
   for (int i = 0; i < maxAttempts; i++) {
     if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
-      time_t now = time(nullptr);
-      struct tm timeinfo;
-      gmtime_r(&now, &timeinfo);
-
-      Rtc::DateTime dt;
-      dt.year = static_cast<uint16_t>(timeinfo.tm_year + 1900);
-      dt.month = static_cast<uint8_t>(timeinfo.tm_mon + 1);
-      dt.day = static_cast<uint8_t>(timeinfo.tm_mday);
-      dt.hour = static_cast<uint8_t>(timeinfo.tm_hour);
-      dt.minute = static_cast<uint8_t>(timeinfo.tm_min);
-      dt.second = static_cast<uint8_t>(timeinfo.tm_sec);
-      dt.weekday = static_cast<uint8_t>(timeinfo.tm_wday);
-      const bool ok = _sdkRtc.set(dt);
-      if (ok) {
-        _cachedUtc = epochFromUtc(dt);
-        _hasCachedTime = true;
-        _lastPollMs = 0;
-        LOG_INF("CLK", "RTC set to %04u-%02u-%02u %02u:%02u:%02u UTC", dt.year, dt.month, dt.day, dt.hour, dt.minute,
-                dt.second);
-      }
+      const bool ok = setUtc(static_cast<int64_t>(time(nullptr)));
       setTimezone(savedTz);
       return ok;
     }

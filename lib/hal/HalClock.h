@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 #include <Rtc.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 class HalClock;
 extern HalClock halClock;  // Singleton
@@ -15,6 +17,11 @@ class HalClock {
   mutable time_t _cachedUtc = 0;
   mutable bool _hasCachedTime = false;
   mutable unsigned long _lastPollMs = 0;
+  // Guards _cachedUtc, _hasCachedTime, _lastPollMs, the process TZ change in
+  // setTimezone and every _sdkRtc call. Non-recursive: public methods must not
+  // call each other while holding it. Created in begin(); only used when
+  // _available is true. Never held across the SNTP wait loop.
+  mutable SemaphoreHandle_t _mutex = nullptr;
 
   static constexpr unsigned long CLOCK_POLL_MS = 10000;  // 10 seconds
 
@@ -42,6 +49,11 @@ class HalClock {
   // 24h mode produces "HH:MM" (needs >=6 bytes); 12h mode produces "H:MM AM"/"HH:MM PM" (needs >=9 bytes).
   // Returns false if RTC is not available.
   bool formatTime(char* buf, size_t bufSize, bool use12Hour = false) const;
+
+  // Write a UTC Unix epoch to the RTC and refresh the read cache. No timezone
+  // involvement (does not touch TZ). Returns false if the RTC is not available,
+  // epoch is negative, or the RTC write fails.
+  bool setUtc(int64_t epoch);
 
   // Sync the RTC from an NTP server. Requires WiFi to be connected.
   // Blocks for up to ~5s while waiting for SNTP response.
