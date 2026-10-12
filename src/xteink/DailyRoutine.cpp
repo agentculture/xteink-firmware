@@ -434,8 +434,11 @@ class Routine {
       answered = budget > 0 && port.waitSntp(budget);
     }
     if (!answered) return;
+    // An SNTP answer is ground truth: check it against the plausibility bound
+    // only, not the anti-rollback floor, which a fast RTC adopted at boot may
+    // already have pushed past true time (the RTC would then never be fixed).
     const int64_t epoch = port.systemClockEpoch();
-    if (!clockPlausible(epoch, port.timeFloor())) return;
+    if (epoch < kMinPlausibleEpoch) return;
     result.rtcWritten = port.writeRtc(epoch);
   }
 

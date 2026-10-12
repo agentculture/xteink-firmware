@@ -1201,6 +1201,20 @@ TEST(DailyRtc, AnImplausibleSystemClockIsNeverWritten) {
   EXPECT_FALSE(r.rtcWritten);
 }
 
+TEST(DailyRtc, AnSntpAnswerBehindTheFloorStillCorrectsAFastRtc) {
+  // The RTC ran ahead; adopting it pushed the anti-rollback floor up to the
+  // fast time. SNTP then answers with the true (earlier) time: the RTC must be
+  // corrected, or it stays ahead forever.
+  FakePort p = dueDevice();
+  const int64_t truth = p.systemClock;
+  p.floor = truth + 3600;
+  p.sntpDone = true;
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_TRUE(r.rtcWritten);
+  EXPECT_EQ(p.rtcWrites, 1);
+  EXPECT_EQ(p.rtcWrittenEpoch, truth);
+}
+
 TEST(DailyRtc, AnInstallRebootWritesOnlyAnAnsweredClockWithoutWaiting) {
   FakePort p = dueDevice();
   p.ota = {sync::OtaDecision::Install, sync::Error::None};
