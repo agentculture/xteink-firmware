@@ -306,30 +306,33 @@ void HomeActivity::freeCoverBuffer() {
   coverBufferStored = false;
 }
 
+// xteink fork: redraw the header clock when the minute changes (half refresh
+// every 15th tick). Skipped while recents load (render task owns the screen
+// then); the minute change is picked up on the first iteration afterwards.
+// Polled once a second: enough for a minute clock, without taking the clock
+// lock and running localtime_r on every 10 ms loop iteration.
+void HomeActivity::pollClockTick() {
+  if (!SETTINGS.clockShowInHeader || !halClock.isAvailable() || recentsLoading) return;
+  const unsigned long checkMs = millis();
+  if (lastClockCheckMs != 0 && checkMs - lastClockCheckMs < 1000) return;
+  lastClockCheckMs = checkMs != 0 ? checkMs : 1;
+
+  uint8_t h = 0;
+  uint8_t m = 0;
+  if (!halClock.getTime(h, m)) return;
+  const auto d = xteink::clocktick::step(clockTick, h * 60 + m);
+  clockTick = d.next;
+  if (!d.redraw) return;
+  LOG_INF("HOME", "clock tick %02u:%02u %s", h, m, d.half ? "HALF" : "FAST");
+  if (d.half) clockHalfPending.store(true);
+  requestUpdate();
+}
+
 void HomeActivity::loop() {
   const int menuCount = getMenuItemCount();
   const auto& metrics = UITheme::getInstance().getMetrics();
 
-  // xteink fork: redraw the header clock when the minute changes (half refresh
-  // every 15th tick). Skipped while recents load (render task owns the screen
-  // then); the minute change is picked up on the first iteration afterwards.
-  // Polled once a second: enough for a minute clock, without taking the clock
-  // lock and running localtime_r on every 10 ms loop iteration.
-  const unsigned long nowMs = millis();
-  if (metrics.headerShowsClock && SETTINGS.clockShowInHeader && halClock.isAvailable() && !recentsLoading &&
-      (lastClockCheckMs == 0 || nowMs - lastClockCheckMs >= 1000)) {
-    lastClockCheckMs = nowMs != 0 ? nowMs : 1;
-    uint8_t h = 0, m = 0;
-    if (halClock.getTime(h, m)) {
-      const auto d = xteink::clocktick::step(clockTick, h * 60 + m);
-      clockTick = d.next;
-      if (d.redraw) {
-        LOG_INF("HOME", "clock tick %02u:%02u %s", h, m, d.half ? "HALF" : "FAST");
-        if (d.half) clockHalfPending.store(true);
-        requestUpdate();
-      }
-    }
-  }
+  if (metrics.headerShowsClock) pollClockTick();
 
   auto activateSelection = [this] {
     if (selectorIndex < recentBooks.size()) {

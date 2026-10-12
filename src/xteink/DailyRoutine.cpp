@@ -463,8 +463,7 @@ class Routine {
       // the system clock is network time, so it wins over the RTC, which may
       // run fast. Adopting the RTC here would overwrite that answer, and
       // syncRtc() would then copy the RTC's own time back as if it were SNTP.
-      const int64_t sys = port.systemClockEpoch();
-      if (sys >= kMinPlausibleEpoch) {
+      if (const int64_t sys = port.systemClockEpoch(); sys >= kMinPlausibleEpoch) {
         result.clock = ClockSource::Network;
         result.now = sys;
         return true;

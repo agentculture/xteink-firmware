@@ -100,7 +100,7 @@ bool HalClock::formatTime(char* buf, size_t bufSize, bool use12Hour) const {
 bool HalClock::setUtc(int64_t epoch) {
   if (!_available || epoch < 0) return false;
 
-  const time_t t = static_cast<time_t>(epoch);
+  const auto t = static_cast<time_t>(epoch);
   struct tm timeinfo;
   gmtime_r(&t, &timeinfo);  // UTC breakdown, no TZ involvement
 

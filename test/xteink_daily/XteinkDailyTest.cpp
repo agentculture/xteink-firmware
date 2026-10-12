@@ -13,6 +13,7 @@
 #include <ctime>
 #include <regex>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "xteink/DailyRoutine.h"
@@ -151,7 +152,7 @@ class FakePort : public RoutinePort {
   bool waitSntp(const uint32_t budgetMs) override {
     ++sntpWaits;
     lastSntpWaitBudget = budgetMs;
-    events.push_back("sntp-wait");
+    events.emplace_back("sntp-wait");
     if (sntpAnswersAfterMs <= budgetMs) {
       now += sntpAnswersAfterMs;
       sntpDone = true;
@@ -163,7 +164,7 @@ class FakePort : public RoutinePort {
   bool writeRtc(const int64_t epoch) override {
     ++rtcWrites;
     rtcWrittenEpoch = epoch;
-    events.push_back("rtc");
+    events.emplace_back("rtc");
     return rtcWriteOk;
   }
   std::string timezone() override { return tz; }
@@ -1040,7 +1041,7 @@ TEST(DailyCap, JoinIsBoundedByItsBudget) {
 
 namespace {
 // Events from `from` on, in order.
-std::vector<std::string> tail(const std::vector<std::string>& events, const std::string& from) {
+std::vector<std::string> tail(const std::vector<std::string>& events, const std::string_view from) {
   std::vector<std::string> out;
   bool on = false;
   for (const auto& e : events) {

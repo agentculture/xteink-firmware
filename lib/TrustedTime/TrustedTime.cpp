@@ -98,14 +98,10 @@ bool syncNow(const uint32_t timeoutMs) {
   // ESP-IDF clears COMPLETED when it is read, so keep the loop's own reading;
   // a second read after the loop would report a successful sync as failed.
   const unsigned long deadline = millis() + timeoutMs;
-  bool synced = false;
-  for (;;) {
-    if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
-      synced = true;
-      break;
-    }
-    if (static_cast<long>(deadline - millis()) <= 0) break;
+  bool synced = sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED;
+  while (!synced && static_cast<long>(deadline - millis()) > 0) {
     delay(100);
+    synced = sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED;
   }
   if (synced) note();
   return synced;

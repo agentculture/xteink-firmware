@@ -68,6 +68,7 @@ class HomeActivity final : public Activity {
     if (idx == i) return HomeMenuItem::SETTINGS_MENU;
     return HomeMenuItem::NONE;
   }
+  void pollClockTick();  // main task: minute tick for the header clock
   void onSelectBook(const std::string& path);
   void onFileBrowserOpen();
   void onLibraryOpen();
