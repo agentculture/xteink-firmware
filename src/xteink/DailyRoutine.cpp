@@ -402,6 +402,7 @@ class Routine {
   const uint32_t startMs;
   bool ownWifi = false;
   Result result;
+  bool rtcSyncBlocked = false;  // SNTP's answer could not be trusted this run
 
   uint32_t remaining() {
     const uint32_t elapsed = port.millis() - startMs;
@@ -426,6 +427,7 @@ class Routine {
   // Waits for a late answer at most min(kClockSyncBudgetMs, what is left of the
   // cap), and only when `mayWait`. Leaves the run's status and outcomes alone.
   void syncRtc(const bool mayWait) {
+    if (rtcSyncBlocked) return;
     // The routine's own syncClock() succeeded: SNTP is done (and may have
     // consumed the COMPLETED status), no wait.
     bool answered = result.clock == ClockSource::Network || port.sntpCompleted();
@@ -456,6 +458,19 @@ class Routine {
   bool establishClock(const int battery) {
     const ClockChoice local =
         chooseLocalClock(port.bootClockEpoch(), port.systemClockEpoch(), port.rtcEpoch(), port.timeFloor());
+    if (local.source == ClockSource::Rtc && port.sntpCompleted()) {
+      // SNTP already answered this boot (e.g. the post-OTA health check):
+      // the system clock is network time, so it wins over the RTC, which may
+      // run fast. Adopting the RTC here would overwrite that answer, and
+      // syncRtc() would then copy the RTC's own time back as if it were SNTP.
+      const int64_t sys = port.systemClockEpoch();
+      if (sys >= kMinPlausibleEpoch) {
+        result.clock = ClockSource::Network;
+        result.now = sys;
+        return true;
+      }
+      rtcSyncBlocked = true;  // contradictory answer: never write the RTC this run
+    }
     if (local.source != ClockSource::None) {
       if (local.source == ClockSource::Rtc) port.adoptClock(local.epoch);
       result.clock = local.source;
@@ -576,7 +591,6 @@ Result run(RoutinePort& port, const Trigger trigger) { return Routine(port, trig
 #include <Logging.h>
 #include <TrustedTime.h>
 #include <WiFi.h>
-#include <esp_sntp.h>
 #include <nvs.h>
 #include <sys/time.h>
 
@@ -689,13 +703,11 @@ class DevicePort final : public RoutinePort {
   }
   bool sntpCompleted() override { return tls_trust::sntpAnswered(); }
   bool waitSntp(const uint32_t budgetMs) override {
-    if (!esp_sntp_enabled()) return false;  // never started (no join this boot)
-    const uint32_t start = ::millis();
-    for (;;) {
-      if (tls_trust::sntpAnswered()) return true;
-      if (::millis() - start >= budgetMs) return false;
-      delay(100);
-    }
+    // The radio may be up without SNTP running (left up by the post-OTA health
+    // check, which made no https request): start it, without restarting one
+    // already in flight (startSync is a no-op then).
+    trustedtime::startSync();
+    return tls_trust::waitForSntp(budgetMs);
   }
   // UTC straight to the RTC: never syncFromNTP/configTzTime/setenv/tzset here
   // (the render task formats the clock under the process TZ).

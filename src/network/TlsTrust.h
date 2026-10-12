@@ -37,4 +37,7 @@ void ensureClockForTls();
 // per-server reachability registers. Never starts or waits for SNTP.
 bool sntpAnswered();
 
+// Polls sntpAnswered() every 100 ms for at most timeoutMs. Does not start SNTP.
+bool waitForSntp(uint32_t timeoutMs);
+
 }  // namespace tls_trust

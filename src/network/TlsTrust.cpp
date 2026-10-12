@@ -56,7 +56,6 @@ bool sntpAnswered() {
   return false;
 }
 
-namespace {
 bool waitForSntp(const uint32_t timeoutMs) {
   const unsigned long deadline = millis() + timeoutMs;
   for (;;) {
@@ -65,7 +64,6 @@ bool waitForSntp(const uint32_t timeoutMs) {
     delay(100);
   }
 }
-}  // namespace
 
 bool isHttpsUrl(const std::string_view url) {
   constexpr std::string_view scheme = "https://";

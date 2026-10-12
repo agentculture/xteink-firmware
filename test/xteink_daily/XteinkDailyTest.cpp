@@ -136,6 +136,7 @@ class FakePort : public RoutinePort {
   void adoptClock(const int64_t epoch) override {
     adopted = epoch;
     events.push_back("adopt");
+    if (systemClock < epoch) systemClock = epoch;  // settimeofday, forward only (as the device)
   }
   int64_t syncClock(uint32_t budgetMs) override {
     ++sntpCalls;
@@ -144,7 +145,9 @@ class FakePort : public RoutinePort {
     if (sntp >= kMinPlausibleEpoch) systemClock = sntp;  // SNTP set the system clock
     return sntp;
   }
-  bool sntpCompleted() override { return sntpDone; }
+  // SNTP can only have answered while the radio is up (joined, or left up by
+  // the post-OTA health check).
+  bool sntpCompleted() override { return sntpDone && connected; }
   bool waitSntp(const uint32_t budgetMs) override {
     ++sntpWaits;
     lastSntpWaitBudget = budgetMs;
@@ -1187,12 +1190,14 @@ TEST(DailyRtc, AFailedClockSyncDoesNotWaitAgain) {
 }
 
 TEST(DailyRtc, AnImplausibleSystemClockIsNeverWritten) {
-  // Defensive: SNTP reports an answer but the system clock reads near epoch 0
-  // (the decision used the RTC; the fake's adoptClock does not move it).
+  // Defensive: SNTP reports an answer but the system clock reads near epoch 0.
+  // The routine falls back to the RTC and adopts it, and must not then copy the
+  // RTC's own time back to the RTC as if SNTP had supplied it.
   FakePort p = dueDevice();
   p.bootClock = 0;
   p.systemClock = 1000;
   p.rtc = utc(2026, 10, 11, 5);
+  p.connected = true;  // the radio was already up, so the answer predates the routine
   p.sntpDone = true;
   const Result r = run(p, Trigger::PowerOn);
   EXPECT_EQ(r.clock, ClockSource::Rtc);
@@ -1212,6 +1217,24 @@ TEST(DailyRtc, AnSntpAnswerBehindTheFloorStillCorrectsAFastRtc) {
   const Result r = run(p, Trigger::PowerOn);
   EXPECT_TRUE(r.rtcWritten);
   EXPECT_EQ(p.rtcWrites, 1);
+  EXPECT_EQ(p.rtcWrittenEpoch, truth);
+}
+
+TEST(DailyRtc, AnEarlierSntpAnswerIsNotOverwrittenByAFastRtc) {
+  // Post-OTA boot: the health check left the radio up and SNTP already set the
+  // system clock to true time, but the boot reading was implausible, so the
+  // local choice is a fast RTC. The SNTP time must win: no adoption, and the
+  // RTC is corrected to true time rather than its own fast value.
+  FakePort p = dueDevice();
+  const int64_t truth = p.systemClock;
+  p.bootClock = 0;
+  p.rtc = truth + 3600;
+  p.connected = true;
+  p.sntpDone = true;
+  const Result r = run(p, Trigger::PowerOn);
+  EXPECT_EQ(r.clock, ClockSource::Network);
+  EXPECT_EQ(p.adopted, 0);
+  EXPECT_TRUE(r.rtcWritten);
   EXPECT_EQ(p.rtcWrittenEpoch, truth);
 }
 
