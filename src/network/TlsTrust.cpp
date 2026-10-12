@@ -40,6 +40,7 @@ constexpr uint8_t SNTP_SERVER_SLOTS = 3;
 bool clockSynced = false;
 bool waitedBefore = false;
 uint32_t lastWaitMs = 0;
+}  // namespace
 
 // True once an SNTP answer has set the clock. ESP-IDF's
 // sntp_get_sync_status() clears COMPLETED on read (lwip/apps/sntp/sntp.c), so
@@ -63,7 +64,6 @@ bool waitForSntp(const uint32_t timeoutMs) {
     delay(100);
   }
 }
-}  // namespace
 
 bool isHttpsUrl(const std::string_view url) {
   constexpr std::string_view scheme = "https://";

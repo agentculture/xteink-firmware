@@ -92,6 +92,7 @@ add_subdirectory(xteink_wifijoin)
 add_subdirectory(xteink_ota)
 add_subdirectory(xteink_ota_health)
 add_subdirectory(xteink_daily)
+add_subdirectory(xteink_clock_tick)
 add_subdirectory(protected_paths)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)

@@ -376,6 +376,7 @@ class Routine {
     if (firmwareStep(battery, note)) {
       result.status = Status::Rebooting;
       port.setNote(Note::None);
+      syncRtc(false);  // the reboot is not held up for a late answer
       port.wifiOff();
       port.reboot();
       return result;
@@ -401,6 +402,7 @@ class Routine {
   const uint32_t startMs;
   bool ownWifi = false;
   Result result;
+  bool rtcSyncBlocked = false;  // SNTP's answer could not be trusted this run
 
   uint32_t remaining() {
     const uint32_t elapsed = port.millis() - startMs;
@@ -410,9 +412,36 @@ class Routine {
   static uint32_t cap(const uint32_t budget, const uint32_t rem) { return budget < rem ? budget : rem; }
 
   Result finish(const Status s) {
-    if (ownWifi) port.wifiOff();
+    if (ownWifi) {
+      // Only a full run may wait for a late SNTP answer: a skipped run has
+      // either just had its own SNTP budget (no clock) or nothing to wait for.
+      syncRtc(s == Status::Ran);
+      port.wifiOff();
+    }
     result.status = s;
     return result;
+  }
+
+  // While the radio is still up: once SNTP has answered, the system clock is
+  // network time; copy it to the RTC so the next start can trust the RTC.
+  // Waits for a late answer at most min(kClockSyncBudgetMs, what is left of the
+  // cap), and only when `mayWait`. Leaves the run's status and outcomes alone.
+  void syncRtc(const bool mayWait) {
+    if (rtcSyncBlocked) return;
+    // The routine's own syncClock() succeeded: SNTP is done (and may have
+    // consumed the COMPLETED status), no wait.
+    bool answered = result.clock == ClockSource::Network || port.sntpCompleted();
+    if (!answered && mayWait) {
+      const uint32_t budget = cap(kClockSyncBudgetMs, remaining());
+      answered = budget > 0 && port.waitSntp(budget);
+    }
+    if (!answered) return;
+    // An SNTP answer is ground truth: check it against the plausibility bound
+    // only, not the anti-rollback floor, which a fast RTC adopted at boot may
+    // already have pushed past true time (the RTC would then never be fixed).
+    const int64_t epoch = port.systemClockEpoch();
+    if (epoch < kMinPlausibleEpoch) return;
+    result.rtcWritten = port.writeRtc(epoch);
   }
 
   bool ensureWifi() {
@@ -429,6 +458,18 @@ class Routine {
   bool establishClock(const int battery) {
     const ClockChoice local =
         chooseLocalClock(port.bootClockEpoch(), port.systemClockEpoch(), port.rtcEpoch(), port.timeFloor());
+    if (local.source == ClockSource::Rtc && port.sntpCompleted()) {
+      // SNTP already answered this boot (e.g. the post-OTA health check):
+      // the system clock is network time, so it wins over the RTC, which may
+      // run fast. Adopting the RTC here would overwrite that answer, and
+      // syncRtc() would then copy the RTC's own time back as if it were SNTP.
+      if (const int64_t sys = port.systemClockEpoch(); sys >= kMinPlausibleEpoch) {
+        result.clock = ClockSource::Network;
+        result.now = sys;
+        return true;
+      }
+      rtcSyncBlocked = true;  // contradictory answer: never write the RTC this run
+    }
     if (local.source != ClockSource::None) {
       if (local.source == ClockSource::Rtc) port.adoptClock(local.epoch);
       result.clock = local.source;
@@ -562,6 +603,7 @@ Result run(RoutinePort& port, const Trigger trigger) { return Routine(port, trig
 #include "activities/Activity.h"  // RenderLock
 #include "components/UITheme.h"
 #include "network/OtaUpdater.h"
+#include "network/TlsTrust.h"
 #include "util/Timezones.h"
 
 namespace xteink::daily {
@@ -658,9 +700,22 @@ class DevicePort final : public RoutinePort {
     if (!trustedtime::syncNow(budgetMs)) return 0;
     return static_cast<int64_t>(time(nullptr));
   }
+  bool sntpCompleted() override { return tls_trust::sntpAnswered(); }
+  bool waitSntp(const uint32_t budgetMs) override {
+    // The radio may be up without SNTP running (left up by the post-OTA health
+    // check, which made no https request): start it, without restarting one
+    // already in flight (startSync is a no-op then).
+    trustedtime::startSync();
+    return tls_trust::waitForSntp(budgetMs);
+  }
+  // UTC straight to the RTC: never syncFromNTP/configTzTime/setenv/tzset here
+  // (the render task formats the clock under the process TZ).
+  bool writeRtc(const int64_t epoch) override { return halClock.isAvailable() && halClock.setUtc(epoch); }
   std::string timezone() override {
-    // The shipped clock default is UTC (clockTimezone 255, legacy offset
-    // unset); the routine's 06:00 then follows Asia/Jerusalem.
+    // xteink builds default the Home clock to Asia/Jerusalem
+    // (XTEINK_CLOCK_DEFAULTS, util/Timezones.cpp). A device whose timezone was
+    // never chosen (clockTimezone out of range, legacy offset unset) still
+    // takes its 06:00 from Asia/Jerusalem.
     const bool chosen = SETTINGS.clockTimezone < timezones::count() || SETTINGS.clockUtcOffsetQ != kLegacyOffsetUnset;
     return routineTimezone(chosen, getenv("TZ"));
   }
@@ -780,9 +835,9 @@ void onBoot(GfxRenderer& renderer, const BootKind kind, const bool silentReboot,
   const uint32_t startMs = millis();
   const Result r = run(port, deepSleepWake ? Trigger::Wake : Trigger::PowerOn);
   releaseWifi();  // NotDue and the early skips never owned the radio
-  LOG_INF(kTag, "Daily routine: %s (clock %s, fw %s, content %s, %lu ms)", statusName(r.status),
+  LOG_INF(kTag, "Daily routine: %s (clock %s, fw %s, content %s, rtc_written %s, %lu ms)", statusName(r.status),
           clockSourceName(r.clock), r.fields.fwOutcome.empty() ? "-" : r.fields.fwOutcome.c_str(),
-          r.fields.contentOutcome.empty() ? "-" : r.fields.contentOutcome.c_str(),
+          r.fields.contentOutcome.empty() ? "-" : r.fields.contentOutcome.c_str(), r.rtcWritten ? "yes" : "no",
           static_cast<unsigned long>(millis() - startMs));
 }
 
