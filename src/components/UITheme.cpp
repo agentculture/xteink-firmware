@@ -17,6 +17,7 @@
 #include "components/themes/lyra/Lyra3CoversTheme.h"
 #include "components/themes/lyra/LyraTheme.h"
 #include "components/themes/roundedraff/RoundedRaffTheme.h"
+#include "components/themes/xteink/XteinkTheme.h"
 
 UITheme UITheme::instance;
 
@@ -63,6 +64,17 @@ void UITheme::setTheme(CrossPointSettings::UI_THEME type) {
       currentTheme = std::make_unique<RoundedRaffTheme>();
       currentMetrics = &RoundedRaffMetrics::values;
       break;
+    case CrossPointSettings::UI_THEME::XTEINK: {
+      auto theme = makeUniqueNoThrow<XteinkTheme>();
+      if (!theme) {
+        LOG_ERR("UI", "OOM: xteink theme");
+        return;
+      }
+      currentTheme = std::move(theme);
+      currentMetrics = &XteinkMetrics::values;
+      LOG_DBG("UI", "Using xteink theme");
+      break;
+    }
     case CrossPointSettings::UI_THEME::LYRA_3_COVERS:
       LOG_DBG("UI", "Using Lyra 3 Covers theme");
       currentTheme = std::make_unique<Lyra3CoversTheme>();

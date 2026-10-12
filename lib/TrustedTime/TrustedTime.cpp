@@ -95,11 +95,14 @@ void startSync() {
 bool syncNow(const uint32_t timeoutMs) {
   // configureSntp() (configTzTime) restarts SNTP if already running.
   configureSntp();
+  // ESP-IDF clears COMPLETED when it is read, so keep the loop's own reading;
+  // a second read after the loop would report a successful sync as failed.
   const unsigned long deadline = millis() + timeoutMs;
-  while (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED && static_cast<long>(deadline - millis()) > 0) {
+  bool synced = sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED;
+  while (!synced && static_cast<long>(deadline - millis()) > 0) {
     delay(100);
+    synced = sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED;
   }
-  const bool synced = sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED;
   if (synced) note();
   return synced;
 }
@@ -108,6 +111,11 @@ int64_t trustedNow() {
   const int64_t now = static_cast<int64_t>(time(nullptr));
   // Never earlier than a time already seen; 0 while neither is trustworthy.
   const int64_t floor = raiseFloor(now >= MIN_VALID_EPOCH ? now : 0);
+  return floor >= MIN_VALID_EPOCH ? floor : 0;
+}
+
+int64_t persistedFloor() {
+  const int64_t floor = readFloor();
   return floor >= MIN_VALID_EPOCH ? floor : 0;
 }
 

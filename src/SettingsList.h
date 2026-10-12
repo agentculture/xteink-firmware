@@ -3,6 +3,7 @@
 #include <BoardConfig.h>
 #include <HalClock.h>
 #include <HalFrontlight.h>
+#include <HalGPIO.h>
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <SdCardFontRegistry.h>
@@ -186,12 +187,20 @@ inline std::vector<StrId> buildLongPressMenuValues() {
   static constexpr StrId VALUES[] = {StrId::STR_KOSYNC, StrId::STR_DISABLED, StrId::STR_BOOKMARK_OPTION,
                                      StrId::STR_DICTIONARY, StrId::STR_READER_MENU};
   const size_t count = BoardConfig::hasHomeKey() ? std::size(VALUES) : std::size(VALUES) - 1;
-  return {VALUES, VALUES + count};
+  std::vector<StrId> values(VALUES, VALUES + count);
+  // xteink d5: under the X3 key profile the default (Disabled) long press opens
+  // zoom mode (reader_long_press::confirmHoldZooms), so label it that way.
+  if (gpio.deviceIsX3()) values[CrossPointSettings::LP_MENU_DISABLED] = StrId::STR_ZOOM;
+  return values;
 }
 
 inline std::vector<StrId> homeThemeValues() {
-  static constexpr StrId VALUES[] = {StrId::STR_THEME_CLASSIC, StrId::STR_THEME_LYRA, StrId::STR_THEME_LYRA_EXTENDED,
-                                     StrId::STR_THEME_ROUNDEDRAFF, StrId::STR_THEME_COVER_GRID};
+  static constexpr StrId VALUES[] = {StrId::STR_THEME_CLASSIC,       StrId::STR_THEME_LYRA,
+                                     StrId::STR_THEME_LYRA_EXTENDED, StrId::STR_THEME_ROUNDEDRAFF,
+                                     StrId::STR_THEME_XTEINK,        StrId::STR_THEME_COVER_GRID};
+  // xteink fork: labels are positional (stored value == index), so keep
+  // UI_THEME order with COVER_GRID last (it is dropped on boards without PSRAM).
+  static_assert(CrossPointSettings::XTEINK == 4 && CrossPointSettings::COVER_GRID == std::size(VALUES) - 1);
   const size_t count = UITheme::supportsCoverGrid() ? std::size(VALUES) : std::size(VALUES) - 1;
   return {VALUES, VALUES + count};
 }
@@ -339,6 +348,9 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                           {StrId::STR_PREV_NEXT, StrId::STR_NEXT_PREV, StrId::STR_DISABLED, StrId::STR_NEXT_NEXT,
                            StrId::STR_PREV_PREV},
                           "sideButtonLayout", StrId::STR_CAT_CONTROLS),
+        SettingInfo::Enum(StrId::STR_ZOOM_BUTTON, &CrossPointSettings::zoomButton,
+                          {StrId::STR_BTN_UP, StrId::STR_BTN_DOWN, StrId::STR_STATE_OFF}, "zoomButton",
+                          StrId::STR_CAT_CONTROLS),
         SettingInfo::Toggle(StrId::STR_TOUCH_READER_CONTROLS, &CrossPointSettings::touchReaderControls,
                             "touchReaderControls", StrId::STR_CAT_CONTROLS),
         SettingInfo::Enum(StrId::STR_NEXT_PAGE_GESTURE, &CrossPointSettings::pageTurnGesture,
@@ -560,6 +572,16 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
   // Frontlit and lightless variants of a board share one binary (EEGO A4);
   // presence is the I2C probe result from Frontlight.begin(). UI-only: the probe
   // has not run at load time, so persistence must keep the key (forPersistence).
+  // xteink d5: the X3 key profile has no side page-turn or zoom key (Left/Right
+  // on the edge keys turn pages, Up/Down scroll lines), so both settings are
+  // inert there. UI-only, like the frontlight filter: saved values are kept.
+  if (!forPersistence && gpio.deviceIsX3()) {
+    v.erase(std::remove_if(v.begin(), v.end(),
+                           [](const SettingInfo& s) {
+                             return s.nameId == StrId::STR_SIDE_BTN_LAYOUT || s.nameId == StrId::STR_ZOOM_BUTTON;
+                           }),
+            v.end());
+  }
   if (!forPersistence && !Frontlight.present()) {
     v.erase(std::remove_if(v.begin(), v.end(),
                            [](const SettingInfo& s) { return s.nameId == StrId::STR_RESTORE_LIGHT_ON_WAKE; }),

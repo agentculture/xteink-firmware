@@ -30,6 +30,8 @@ enum class SettingAction {
   KeyboardLayouts,
   HomeButton,
   About,
+  ProvisionUsb,
+  XteinkSync,
 };
 
 struct SettingInfo {

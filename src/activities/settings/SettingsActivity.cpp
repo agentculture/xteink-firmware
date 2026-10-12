@@ -26,12 +26,14 @@
 #include "MappedInputManager.h"
 #include "OpdsServerListActivity.h"
 #include "OtaUpdateActivity.h"
+#include "ProvisionUsbActivity.h"
 #include "SdCardFontSystem.h"
 #include "SdFirmwareUpdateActivity.h"
 #include "SettingsList.h"
 #include "SilentRestart.h"
 #include "StatusBarSettingsActivity.h"
 #include "TextSettingsActivity.h"
+#include "XteinkSyncActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/plugins/PluginCatalogActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
@@ -111,6 +113,11 @@ void SettingsActivity::rebuildSettingsLists() {
   systemSettings.push_back(SettingInfo::Action(StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_PLUGINS, SettingAction::Plugins));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_KEYBOARD_LAYOUTS, SettingAction::KeyboardLayouts));
+#ifdef ENABLE_SERIAL_LOG
+  // Provisioning rides the USB serial port, which only slim builds leave unstarted.
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_PROVISION_USB, SettingAction::ProvisionUsb));
+#endif
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_XTEINK_SYNC_NOW, SettingAction::XteinkSync));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_ABOUT, SettingAction::About));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
   readerSettings.insert(readerSettings.begin(),
@@ -440,6 +447,22 @@ void SettingsActivity::toggleCurrentSetting() {
           LOG_ERR("SETTINGS", "OOM: KeyboardLayoutsActivity");
         }
         break;
+#ifdef ENABLE_SERIAL_LOG
+      case SettingAction::ProvisionUsb:
+        if (auto activity = makeUniqueNoThrow<ProvisionUsbActivity>(renderer, mappedInput)) {
+          startActivityForResult(std::move(activity), resultHandler);
+        } else {
+          LOG_ERR("SETTINGS", "OOM: ProvisionUsbActivity");
+        }
+        break;
+#endif
+      case SettingAction::XteinkSync:
+        if (auto activity = makeUniqueNoThrow<XteinkSyncActivity>(renderer, mappedInput)) {
+          startActivityForResult(std::move(activity), resultHandler);
+        } else {
+          LOG_ERR("SETTINGS", "OOM: XteinkSyncActivity");
+        }
+        break;
       case SettingAction::About:
         if (auto activity = makeUniqueNoThrow<AboutActivity>(renderer, mappedInput)) {
           startActivityForResult(std::move(activity), nullptr);
@@ -603,7 +626,10 @@ void SettingsActivity::drawFooter() {
                   : (ring > 0 && (*currentSettings)[ring - 1].nameId == StrId::STR_TIME_TO_SLEEP ? tr(STR_SELECT)
                                                                                                  : tr(STR_TOGGLE));
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  // Front Left/Right switch tabs here (xteink d2, UiTabListActivity); under the
+  // X3 key profile the hints over bottom keys 3/4 read Up/Down (xteink d5).
+  const auto labels = mappedInput.mapDirectionalLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT),
+                                                       tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 

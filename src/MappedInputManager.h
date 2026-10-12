@@ -28,7 +28,8 @@ class MappedInputManager {
     ScreenLeft,
     ScreenRight,
     ScreenUp,
-    ScreenDown
+    ScreenDown,
+    Zoom  // side key that toggles reader zoom mode (SETTINGS.zoomButton)
   };
   enum class SwipeDir { None, Left, Right, Up, Down };
 
@@ -122,6 +123,11 @@ class MappedInputManager {
   // or when button-only boards opt in, while the screen is currently INVERTED / LANDSCAPE_CCW.
   [[nodiscard]] bool isNavDirectionSwapped() const;
 
+  // xteink d5: X3 key profile (xteink/X3KeyProfile.h). Edge keys are logical
+  // Left/Right, bottom keys 3/4 are Up/Down; there is no side page-turn or zoom
+  // key. Follows the runtime X3 detection, so X4 builds and units are untouched.
+  [[nodiscard]] bool hasX3KeyProfile() const { return gpio.deviceIsX3(); }
+
  private:
   HalGPIO& gpio;
   // Logical-to-physical button mapping depends on what the user is actually looking at: when the
@@ -132,7 +138,12 @@ class MappedInputManager {
   const GfxRenderer& renderer;
 
   Button mapScreenDirection(Button button) const;
-  Labels mapFrontLabels(const char* back, const char* confirm, const char* left, const char* right) const;
+  Labels mapFrontLabels(const char* back, const char* confirm, const char* left, const char* right, const char* up,
+                        const char* down) const;
+  // True when hw is the side key SETTINGS.zoomButton reserves for zoom mode.
+  bool isZoomKey(uint8_t hw) const;
+  // Reads a HalGPIO button slot through the X3 key profile.
+  bool readKey(bool (HalGPIO::*fn)(uint8_t) const, uint8_t slot) const;
   bool mapButton(Button button, bool (HalGPIO::*fn)(uint8_t) const) const;
   // SDK edge classification (fui::edgeSwipe) + the shared decode/held-time
   // bookkeeping; the wrappers below give each edge its board meaning.
