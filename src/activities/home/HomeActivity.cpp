@@ -322,10 +322,11 @@ void HomeActivity::pollClockTick() {
   if (!halClock.getTime(h, m)) return;
   const auto d = xteink::clocktick::step(clockTick, h * 60 + m);
   clockTick = d.next;
-  if (!d.redraw) return;
-  LOG_INF("HOME", "clock tick %02u:%02u %s", h, m, d.half ? "HALF" : "FAST");
-  if (d.half) clockHalfPending.store(true);
-  requestUpdate();
+  if (d.redraw) {
+    LOG_INF("HOME", "clock tick %02u:%02u %s", h, m, d.half ? "HALF" : "FAST");
+    if (d.half) clockHalfPending.store(true);
+    requestUpdate();
+  }
 }
 
 void HomeActivity::loop() {
