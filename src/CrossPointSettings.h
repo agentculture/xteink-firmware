@@ -261,7 +261,11 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // CLOCK_DST_MODE: follow the zone's DST rule, or force it on/off.
   uint8_t clockDst = CLOCK_DST_AUTO;
   // Show the clock opposite the battery in every header band that draws one.
+#ifdef XTEINK_CLOCK_DEFAULTS
+  uint8_t clockShowInHeader = 1;  // xteink builds: Home clock on by default
+#else
   uint8_t clockShowInHeader = 0;
+#endif
   // Set once an NTP sync succeeds. Used to skip re-syncing on every WiFi connect.
   // Resetting to 0 (e.g. via the web UI) forces a re-sync on next WiFi connect.
   uint8_t clockHasBeenSynced = 0;
