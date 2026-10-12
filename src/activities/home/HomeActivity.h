@@ -18,7 +18,8 @@ class HomeActivity final : public Activity {
   int selectorIndex = 0;
   xteink::clocktick::State clockTick;         // main task only (loop/onEnter)
   std::atomic<bool> clockHalfPending{false};  // set by loop(), consumed by the render task
-  bool recentsLoading = false;
+  std::atomic<bool> recentsLoading{false};    // written by the render task, read by loop()
+  unsigned long lastClockCheckMs = 0;         // main task only: the tick polls once a second
   bool recentsLoaded = false;
   bool firstRenderDone = false;
   bool hasOpdsServers = false;

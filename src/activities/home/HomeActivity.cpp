@@ -255,6 +255,7 @@ void HomeActivity::onEnter() {
 
   clockTick = xteink::clocktick::State{};
   clockHalfPending.store(false);
+  lastClockCheckMs = 0;
 
   // Trigger first update
   requestUpdate();
@@ -312,7 +313,12 @@ void HomeActivity::loop() {
   // xteink fork: redraw the header clock when the minute changes (half refresh
   // every 15th tick). Skipped while recents load (render task owns the screen
   // then); the minute change is picked up on the first iteration afterwards.
-  if (SETTINGS.clockShowInHeader && halClock.isAvailable() && !recentsLoading) {
+  // Polled once a second: enough for a minute clock, without taking the clock
+  // lock and running localtime_r on every 10 ms loop iteration.
+  const unsigned long nowMs = millis();
+  if (metrics.headerShowsClock && SETTINGS.clockShowInHeader && halClock.isAvailable() && !recentsLoading &&
+      (lastClockCheckMs == 0 || nowMs - lastClockCheckMs >= 1000)) {
+    lastClockCheckMs = nowMs != 0 ? nowMs : 1;
     uint8_t h = 0, m = 0;
     if (halClock.getTime(h, m)) {
       const auto d = xteink::clocktick::step(clockTick, h * 60 + m);
