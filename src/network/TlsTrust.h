@@ -32,4 +32,9 @@ void applyVerifiedTls(freeink::SecureHttpClient& http);
 // closed.
 void ensureClockForTls();
 
+// True once an SNTP answer has set the system clock this boot. Robust against
+// sntp_get_sync_status() clearing COMPLETED on read: also checks the
+// per-server reachability registers. Never starts or waits for SNTP.
+bool sntpAnswered();
+
 }  // namespace tls_trust

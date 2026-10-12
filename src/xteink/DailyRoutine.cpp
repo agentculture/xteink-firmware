@@ -376,6 +376,7 @@ class Routine {
     if (firmwareStep(battery, note)) {
       result.status = Status::Rebooting;
       port.setNote(Note::None);
+      syncRtc(false);  // the reboot is not held up for a late answer
       port.wifiOff();
       port.reboot();
       return result;
@@ -410,9 +411,32 @@ class Routine {
   static uint32_t cap(const uint32_t budget, const uint32_t rem) { return budget < rem ? budget : rem; }
 
   Result finish(const Status s) {
-    if (ownWifi) port.wifiOff();
+    if (ownWifi) {
+      // Only a full run may wait for a late SNTP answer: a skipped run has
+      // either just had its own SNTP budget (no clock) or nothing to wait for.
+      syncRtc(s == Status::Ran);
+      port.wifiOff();
+    }
     result.status = s;
     return result;
+  }
+
+  // While the radio is still up: once SNTP has answered, the system clock is
+  // network time; copy it to the RTC so the next start can trust the RTC.
+  // Waits for a late answer at most min(kClockSyncBudgetMs, what is left of the
+  // cap), and only when `mayWait`. Leaves the run's status and outcomes alone.
+  void syncRtc(const bool mayWait) {
+    // The routine's own syncClock() succeeded: SNTP is done (and may have
+    // consumed the COMPLETED status), no wait.
+    bool answered = result.clock == ClockSource::Network || port.sntpCompleted();
+    if (!answered && mayWait) {
+      const uint32_t budget = cap(kClockSyncBudgetMs, remaining());
+      answered = budget > 0 && port.waitSntp(budget);
+    }
+    if (!answered) return;
+    const int64_t epoch = port.systemClockEpoch();
+    if (!clockPlausible(epoch, port.timeFloor())) return;
+    result.rtcWritten = port.writeRtc(epoch);
   }
 
   bool ensureWifi() {
@@ -549,6 +573,7 @@ Result run(RoutinePort& port, const Trigger trigger) { return Routine(port, trig
 #include <Logging.h>
 #include <TrustedTime.h>
 #include <WiFi.h>
+#include <esp_sntp.h>
 #include <nvs.h>
 #include <sys/time.h>
 
@@ -562,6 +587,7 @@ Result run(RoutinePort& port, const Trigger trigger) { return Routine(port, trig
 #include "activities/Activity.h"  // RenderLock
 #include "components/UITheme.h"
 #include "network/OtaUpdater.h"
+#include "network/TlsTrust.h"
 #include "util/Timezones.h"
 
 namespace xteink::daily {
@@ -658,9 +684,24 @@ class DevicePort final : public RoutinePort {
     if (!trustedtime::syncNow(budgetMs)) return 0;
     return static_cast<int64_t>(time(nullptr));
   }
+  bool sntpCompleted() override { return tls_trust::sntpAnswered(); }
+  bool waitSntp(const uint32_t budgetMs) override {
+    if (!esp_sntp_enabled()) return false;  // never started (no join this boot)
+    const uint32_t start = ::millis();
+    for (;;) {
+      if (tls_trust::sntpAnswered()) return true;
+      if (::millis() - start >= budgetMs) return false;
+      delay(100);
+    }
+  }
+  // UTC straight to the RTC: never syncFromNTP/configTzTime/setenv/tzset here
+  // (the render task formats the clock under the process TZ).
+  bool writeRtc(const int64_t epoch) override { return halClock.isAvailable() && halClock.setUtc(epoch); }
   std::string timezone() override {
-    // The shipped clock default is UTC (clockTimezone 255, legacy offset
-    // unset); the routine's 06:00 then follows Asia/Jerusalem.
+    // xteink builds default the Home clock to Asia/Jerusalem
+    // (XTEINK_CLOCK_DEFAULTS, util/Timezones.cpp). A device whose timezone was
+    // never chosen (clockTimezone out of range, legacy offset unset) still
+    // takes its 06:00 from Asia/Jerusalem.
     const bool chosen = SETTINGS.clockTimezone < timezones::count() || SETTINGS.clockUtcOffsetQ != kLegacyOffsetUnset;
     return routineTimezone(chosen, getenv("TZ"));
   }
@@ -780,9 +821,9 @@ void onBoot(GfxRenderer& renderer, const BootKind kind, const bool silentReboot,
   const uint32_t startMs = millis();
   const Result r = run(port, deepSleepWake ? Trigger::Wake : Trigger::PowerOn);
   releaseWifi();  // NotDue and the early skips never owned the radio
-  LOG_INF(kTag, "Daily routine: %s (clock %s, fw %s, content %s, %lu ms)", statusName(r.status),
+  LOG_INF(kTag, "Daily routine: %s (clock %s, fw %s, content %s, rtc_written %s, %lu ms)", statusName(r.status),
           clockSourceName(r.clock), r.fields.fwOutcome.empty() ? "-" : r.fields.fwOutcome.c_str(),
-          r.fields.contentOutcome.empty() ? "-" : r.fields.contentOutcome.c_str(),
+          r.fields.contentOutcome.empty() ? "-" : r.fields.contentOutcome.c_str(), r.rtcWritten ? "yes" : "no",
           static_cast<unsigned long>(millis() - startMs));
 }
 
