@@ -4,6 +4,7 @@
 #include <Epub.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
+#include <HalClock.h>
 #include <HalDisplay.h>
 #include <HalStorage.h>
 #include <I18n.h>
@@ -26,6 +27,7 @@
 #include "activities/plugins/PluginCatalogActivity.h"  // anyPluginInstalled()
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "xteink/ClockTick.h"
 #include "xteink/XteinkSync.h"
 
 int HomeActivity::getMenuItemCount() const {
@@ -251,6 +253,9 @@ void HomeActivity::onEnter() {
   const auto base = static_cast<int>(recentBooks.size());
   selectorIndex = initialMenuItem == HomeMenuItem::NONE ? 0 : base + menuItemToIndex(initialMenuItem, hasLibrarySlot());
 
+  clockTick = xteink::clocktick::State{};
+  clockHalfPending.store(false);
+
   // Trigger first update
   requestUpdate();
 }
@@ -303,6 +308,22 @@ void HomeActivity::freeCoverBuffer() {
 void HomeActivity::loop() {
   const int menuCount = getMenuItemCount();
   const auto& metrics = UITheme::getInstance().getMetrics();
+
+  // xteink fork: redraw the header clock when the minute changes (half refresh
+  // every 15th tick). Skipped while recents load (render task owns the screen
+  // then); the minute change is picked up on the first iteration afterwards.
+  if (SETTINGS.clockShowInHeader && halClock.isAvailable() && !recentsLoading) {
+    uint8_t h = 0, m = 0;
+    if (halClock.getTime(h, m)) {
+      const auto d = xteink::clocktick::step(clockTick, h * 60 + m);
+      clockTick = d.next;
+      if (d.redraw) {
+        LOG_INF("HOME", "clock tick %02u:%02u %s", h, m, d.half ? "HALF" : "FAST");
+        if (d.half) clockHalfPending.store(true);
+        requestUpdate();
+      }
+    }
+  }
 
   auto activateSelection = [this] {
     if (selectorIndex < recentBooks.size()) {
@@ -470,6 +491,12 @@ void HomeActivity::render(RenderLock&&) {
   // self-insets in drawHeader, so only the cover/menu need it here.
   const Rect content = UITheme::getInstance().getContentArea(renderer);
 
+  // xteink fork: a clock tick asked for a half refresh (consumed by whichever render runs next).
+  const bool clockHalf = clockHalfPending.exchange(false);
+  const auto refreshMode = [&] {
+    return clockHalf || (cleanInitialRefresh && !firstRenderDone) ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH;
+  };
+
   renderer.clearScreen();
   if (coverGridUi) {
     coverGridUi->setSelection(selectorIndex);
@@ -479,8 +506,7 @@ void HomeActivity::render(RenderLock&&) {
     const auto labels = mappedInput.mapLabels(hasContinueReading ? tr(STR_RESUME) : "", tr(STR_SELECT),
                                               tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer(cleanInitialRefresh && !firstRenderDone ? HalDisplay::HALF_REFRESH
-                                                                   : HalDisplay::FAST_REFRESH);
+    renderer.displayBuffer(refreshMode());
     // Slot heights are recorded during the draw above; a change (first layout
     // pass, orientation switch) means the paths must point at those sizes and
     // any missing thumbs must be generated. Refreshing the paths right away
@@ -556,7 +582,7 @@ void HomeActivity::render(RenderLock&&) {
                                             tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
-  renderer.displayBuffer(cleanInitialRefresh && !firstRenderDone ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
+  renderer.displayBuffer(refreshMode());
 
   if (!firstRenderDone) {
     firstRenderDone = true;
