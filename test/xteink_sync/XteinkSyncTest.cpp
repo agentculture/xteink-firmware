@@ -95,6 +95,53 @@ TEST(XteinkSyncQueue, ParsesDocExample) {
   EXPECT_EQ(q.droppedItems, 0u);
 }
 
+namespace {
+// One-item queue body with an optional raw "kind" JSON fragment (e.g. R"("kind":"article")").
+std::string queueWithKind(const std::string& kindFragment) {
+  return R"({"protocol":"1","items":[{"id":7,"size":10,"sha256":")" + kShaA +
+         R"(","format":"epub","url":"/api/device/items/7")" + (kindFragment.empty() ? "" : "," + kindFragment) + "}]}";
+}
+
+ItemKind kindOf(const std::string& kindFragment) {
+  Queue q;
+  EXPECT_TRUE(parseQ(queueWithKind(kindFragment), q));
+  EXPECT_EQ(q.items.size(), 1u);
+  EXPECT_EQ(q.droppedItems, 0u);
+  return q.items.empty() ? ItemKind::Book : q.items[0].kind;
+}
+}  // namespace
+
+TEST(XteinkSyncQueue, ParsesKind) {
+  EXPECT_EQ(kindOf(R"("kind":"book")"), ItemKind::Book);
+  EXPECT_EQ(kindOf(R"("kind":"article")"), ItemKind::Article);
+  EXPECT_EQ(kindOf(R"("kind":"transcript")"), ItemKind::Transcript);
+  EXPECT_EQ(kindOf(R"("kind":"newspaper")"), ItemKind::Newspaper);
+  EXPECT_EQ(kindOf(R"("kind":"Transcript")"), ItemKind::Transcript);  // lowercased
+}
+
+TEST(XteinkSyncQueue, AbsentUnknownOrNonStringKindIsBook) {
+  EXPECT_EQ(kindOf(""), ItemKind::Book);
+  EXPECT_EQ(kindOf(R"("kind":"podcast")"), ItemKind::Book);
+  EXPECT_EQ(kindOf(R"("kind":"")"), ItemKind::Book);
+  EXPECT_EQ(kindOf(R"("kind":null)"), ItemKind::Book);
+  EXPECT_EQ(kindOf(R"("kind":3)"), ItemKind::Book);
+  EXPECT_EQ(kindOf(R"("kind":["article"])"), ItemKind::Book);
+}
+
+TEST(XteinkSyncQueue, DocExampleItemDefaultsToBook) {
+  Queue q;
+  ASSERT_TRUE(parseQ(queueWithKind(""), q));
+  EXPECT_EQ(q.items[0].kind, ItemKind::Book);
+}
+
+TEST(XteinkSyncKind, FolderPerKind) {
+  EXPECT_STREQ(kindFolder(ItemKind::Book), "/xteink");
+  EXPECT_STREQ(kindFolder(ItemKind::Article), "/xteink/articles");
+  EXPECT_STREQ(kindFolder(ItemKind::Transcript), "/xteink/transcripts");
+  EXPECT_STREQ(kindFolder(ItemKind::Newspaper), "/xteink/newspapers");
+  EXPECT_STREQ(kindFolder(static_cast<ItemKind>(99)), "/xteink");  // unknown -> book folder
+}
+
 TEST(XteinkSyncQueue, EmptyQueue) {
   Queue q;
   ASSERT_TRUE(parseQ(R"({"protocol":"1","items":[],"skipped":[],"deletes":[]})", q));

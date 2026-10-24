@@ -215,6 +215,28 @@ std::string toHex(const uint8_t* digest, const size_t len) {
 
 // --- queue ---------------------------------------------------------------
 
+ItemKind parseItemKind(const std::string& s) {
+  const std::string k = lower(s);
+  if (k == "article") return ItemKind::Article;
+  if (k == "transcript") return ItemKind::Transcript;
+  if (k == "newspaper") return ItemKind::Newspaper;
+  return ItemKind::Book;
+}
+
+const char* kindFolder(const ItemKind kind) {
+  switch (kind) {
+    case ItemKind::Article:
+      return "/xteink/articles";
+    case ItemKind::Transcript:
+      return "/xteink/transcripts";
+    case ItemKind::Newspaper:
+      return "/xteink/newspapers";
+    case ItemKind::Book:
+      break;
+  }
+  return "/xteink";
+}
+
 bool parseQueue(const char* json, const size_t len, Queue& out) {
   out = Queue{};
   JsonDocument doc;
@@ -243,6 +265,7 @@ bool parseQueue(const char* json, const size_t len, Queue& out) {
     q.sha256 = it["sha256"].as<const char*>();
     q.url = it["url"].as<const char*>();
     q.format = lower(it["format"] | "");
+    q.kind = parseItemKind(it["kind"] | "");
     q.title = it["title"] | "";
     if (q.title.size() > kMaxTitleLen) q.title.resize(kMaxTitleLen);
     if (q.size < 0 || !isSha256Hex(q.sha256) || !isRootRelativePath(q.url)) {
