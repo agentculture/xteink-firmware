@@ -115,8 +115,22 @@ std::string buildStatusJson(const StatusReport& report);
 
 // --- queue ---------------------------------------------------------------
 
+// What the server says an item is. Decides the SD folder it lands in. An
+// absent, unknown or non-string "kind" is Book (an older server sends none).
+enum class ItemKind : uint8_t { Book, Article, Transcript, Newspaper };
+
+// "book" | "article" | "transcript" | "newspaper" (case-insensitive) -> kind;
+// anything else -> Book.
+ItemKind parseItemKind(const std::string& s);
+
+// SD folder (no trailing slash) for a kind: "/xteink" for Book,
+// "/xteink/articles", "/xteink/transcripts", "/xteink/newspapers". An
+// out-of-range value gets the Book folder.
+const char* kindFolder(ItemKind kind);
+
 struct QueueItem {
   int64_t id = 0;
+  ItemKind kind = ItemKind::Book;
   std::string title;
   int64_t size = 0;
   std::string sha256;
