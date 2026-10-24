@@ -7,6 +7,7 @@
 #include <functional>
 #include <string>
 
+#include "TlsTrust.h"
 #include "WifiPowerSaveGuard.h"
 
 extern "C" void wolfSSL_Arduino_Serial_Print(const char* const msg) { LOG_DBG("WOLFSSL", "%s", msg); }
@@ -21,19 +22,22 @@ constexpr int HTTP_TIMEOUT_MS = 60000;
 // speaks TLS 1.3 and reads large bodies reliably). Plain-http URLs still use a
 // WiFiClient here, so this is safe for non-TLS targets too. A body cut short
 // mid-transfer resumes with a Range request (see ResumableFetch.h).
+// xteink fork: https is verified (pinned roots + hostname, see TlsTrust.h);
+// a server whose chain does not reach a pinned root fails closed.
 HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::string& username,
                                            const std::string& password,
                                            const std::vector<HttpDownloader::Header>& headers,
                                            const freeink::FetchSink& sink, const bool* cancelFlag = nullptr,
                                            size_t* bytesOut = nullptr, const bool downgradeRedirectsToHttp = false) {
   WifiPowerSaveGuard psGuard;
+  if (tls_trust::isHttpsUrl(url)) tls_trust::ensureClockForTls();
   freeink::FetchOptions options;
   options.redirectToHttp = downgradeRedirectsToHttp;
   const freeink::FetchResult result = freeink::fetchResumable(
       url, options,
       [&](freeink::SecureHttpClient& http, const bool sameOrigin) {
         http.setTimeout(HTTP_TIMEOUT_MS);
-        http.setInsecure();
+        tls_trust::applyVerifiedTls(http);
         // setUserAgent replaces SecureHttpClient's built-in UA; addHeader would
         // append a second User-Agent header, which strict servers reject (aiohttp
         // answers 400 "Duplicate 'User-Agent' header found").

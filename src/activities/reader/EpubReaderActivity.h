@@ -13,9 +13,11 @@
 #include "BookmarkEntry.h"
 #include "ChapterPosition.h"
 #include "EpubReaderMenuActivity.h"
+#include "LineWindow.h"
 #include "ProgressMapper.h"
 #include "ReaderActivity.h"
 #include "ReaderToolbarUi.h"
+#include "ZoomMode.h"
 #include "components/OptionPopup.h"
 
 class EpubReaderActivity final : public ReaderActivity {
@@ -54,6 +56,32 @@ class EpubReaderActivity final : public ReaderActivity {
   bool recentsEntryRemoved = false;
   unsigned long bookmarkMessageTime = 0UL;
   bool pendingReadFolderMove = false;
+
+  // Paragraph scroll (xteink d3, X3 key profile, LineWindow.h): the window is
+  // (section->currentPage, lineOffset), valid only while the anchor matches the
+  // page on screen; any other navigation (go-to, chapter, reflow) drops it.
+  int lineOffset = 0;
+  int lineAnchorSpine = -1;
+  int lineAnchorPage = -1;
+  // Line positions of the anchor page from its last render (before the window is
+  // applied): paragraph steps read the paragraph gaps from them.
+  std::vector<line_window::Element> lineEls;
+  bool linePendingBack = false;
+  bool lineAnchorValid() const;
+  void lineScroll(int step);
+  void carryLineOffsetAfterTurn(int spineBefore);
+  void resetLineScroll() {
+    lineOffset = 0;
+    linePendingBack = false;
+    lineAnchorPage = -1;
+  }
+  // Applies the window to the loaded page in place (renderBook's page).
+  void composeLineWindow(Page& page);
+  static void lineElements(const Page& src, std::vector<line_window::Element>& out);
+
+  // Zoom mode (xteink fork): the zoom key shows a point-size scale over the
+  // page; Left/Right only move the selection, and the book reflows once on exit.
+  ZoomMode zoom;
 
   // Toolbar reader menu (SETTINGS.readerMenuStyle == READER_MENU_TOOLBAR): drawn
   // over the page instead of pushing the full-screen list menu. Select opens the
@@ -166,6 +194,12 @@ class EpubReaderActivity final : public ReaderActivity {
   // Persist the reader text settings, (re)load the selected SD font, and
   // re-paginate the current chapter so changes apply without re-opening the book.
   void applyReaderTextSettings();
+  // Zoom mode. enterZoom(paintNow): paintNow draws the scale straight onto the
+  // page already on screen; otherwise the next renderBook() draws it.
+  void enterZoom(bool paintNow);
+  void handleZoomInput();
+  void exitZoom(bool commit);
+  void paintZoomScale();  // draws into the framebuffer; caller holds RenderLock and pushes the refresh
   // More panel rows.
   void buildMoreActions();
   std::string moreRowName(int row) const;

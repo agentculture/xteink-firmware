@@ -3,11 +3,15 @@
 #include <GfxRenderer.h>
 #include <I18n.h>
 
+#include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/Logo120.h"
 
 void BootActivity::onEnter() {
   Activity::onEnter();
+
+  // xteink fork: the active theme may own the splash (see BaseTheme::drawBootScreen).
+  if (GUI.drawBootScreen(renderer)) return;
 
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();

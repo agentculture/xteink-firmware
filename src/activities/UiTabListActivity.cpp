@@ -59,32 +59,41 @@ void UiTabListActivity::moveRingTo(const int ringIndex) {
   requestUpdate();
 }
 
-void UiTabListActivity::navigateButtons() {
-  if (mappedInput.wasPressed(MappedInputManager::Button::NavNext) ||
-      mappedInput.wasPressed(MappedInputManager::Button::NavPrevious)) {
-    navigationStartedOnTabs = ringPos() == 0;
+void UiTabListActivity::applyTabListMove(const tab_list_nav::Move move, const bool held) {
+  const int dir = tab_list_nav::direction(move);
+  if (tab_list_nav::isTabMove(move)) {
+    const bool wasOnBand = ringPos() == 0;
+    stepTab(dir);  // subclass owns wrap, per-switch state and the update request
+    activeNav().selected = tab_list_nav::ringAfterTabSwitch(wasOnBand, ringPos(), listCount());
+    requestUpdate();
+    return;
   }
-  // Buttons walk the tab band (index 0) plus the rows (1..listCount).
-  const int ringSize = listCount() + 1;
-  buttonNavigator.onNextPress([this, ringSize] { moveRingTo(ButtonNavigator::nextIndex(ringPos(), ringSize)); });
-  buttonNavigator.onPreviousPress(
-      [this, ringSize] { moveRingTo(ButtonNavigator::previousIndex(ringPos(), ringSize)); });
-  buttonNavigator.onNextContinuous([this] {
-    if (navigationStartedOnTabs) {
-      activeNav().selected = 0;
-    } else if (ringPos() == 0 && listCount() > 0) {
-      activeNav().selected = 1;
-    }
-    stepTab(1);
-  });
-  buttonNavigator.onPreviousContinuous([this] {
-    if (navigationStartedOnTabs) {
-      activeNav().selected = 0;
-    } else if (ringPos() == 0 && listCount() > 0) {
-      activeNav().selected = 1;
-    }
-    stepTab(-1);
-  });
+  const int count = listCount();
+  moveRingTo(held ? tab_list_nav::ringPage(ringPos(), count, activeNav().inputPageRows(), dir)
+                  : tab_list_nav::ringStep(ringPos(), count, dir));
+}
+
+void UiTabListActivity::navigateButtons() {
+  // d2: front Left/Right switch tabs at once; side Up/Down walk the band and
+  // the rows of the current tab (a hold pages through the rows). The logical
+  // Left/Right/Up/Down buttons already apply the front-button remap
+  // (MappedInputManager::mapButton); the orientation axis swap that NavNext
+  // applies is mirrored by tab_list_nav::moveFor. Global NavNext/NavPrevious
+  // semantics are unchanged for every other screen.
+  using Button = MappedInputManager::Button;
+  using tab_list_nav::Key;
+  struct Binding {
+    Key key;
+    Button button;
+  };
+  static constexpr Binding kBindings[] = {
+      {Key::Left, Button::Left}, {Key::Right, Button::Right}, {Key::Up, Button::Up}, {Key::Down, Button::Down}};
+  const bool swapped = mappedInput.isNavDirectionSwapped();
+  for (const Binding& binding : kBindings) {
+    const tab_list_nav::Move move = tab_list_nav::moveFor(binding.key, swapped);
+    ButtonNavigator::onPress({binding.button}, [this, move] { applyTabListMove(move, false); });
+    buttonNavigator.onContinuous({binding.button}, [this, move] { applyTabListMove(move, true); });
+  }
 }
 
 void UiTabListActivity::syncTabListViewport(UiScreen& screen, fui::ListProps& props) {

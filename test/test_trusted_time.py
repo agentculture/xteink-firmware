@@ -19,6 +19,7 @@ using portMUX_TYPE = int;
 #define portEXIT_CRITICAL(lock) ((void)(lock))
 inline bool enabled = false;
 inline bool completed = true;
+inline bool answered = true;  // an SNTP answer is pending (read once)
 inline int configurations = 0;
 inline unsigned long ticks = 0;
 inline unsigned long millis() { return ticks; }
@@ -46,7 +47,12 @@ struct Preferences {
 #include <Arduino.h>
 constexpr int SNTP_SYNC_STATUS_COMPLETED = 1;
 inline bool esp_sntp_enabled() { return enabled; }
-inline int sntp_get_sync_status() { return completed ? SNTP_SYNC_STATUS_COMPLETED : 0; }
+// ESP-IDF clears COMPLETED when it is read (lwip apps/sntp/sntp.c).
+inline int sntp_get_sync_status() {
+  if (!answered) return 0;
+  answered = false;
+  return SNTP_SYNC_STATUS_COMPLETED;
+}
 inline void sntp_set_time_sync_notification_cb(void (*)(timeval*)) {}
 ''',
 }
@@ -64,9 +70,11 @@ int main() {
   assert(configurations == 1 && strcmp(getenv("TZ"), zone) == 0);
   trustedtime::startSync();
   assert(configurations == 1);
+  answered = completed;  // an answer arrives
   assert(trustedtime::syncNow(200));
   assert(configurations == 2 && strcmp(getenv("TZ"), zone) == 0);
   completed = false;
+  answered = false;  // no answer this time
   assert(!trustedtime::syncNow(200));
   assert(strcmp(getenv("TZ"), zone) == 0);
   unsetenv("TZ");

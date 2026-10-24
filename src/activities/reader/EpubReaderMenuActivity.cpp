@@ -62,6 +62,7 @@ void EpubReaderMenuActivity::buildMenuItems(std::vector<MenuItem>& items, bool h
   items.push_back({MenuAction::SYNC, StrId::STR_SYNC_PROGRESS});
   items.push_back({MenuAction::DELETE_CACHE, StrId::STR_DELETE_CACHE});
   items.push_back({MenuAction::TEXT_SETTINGS, StrId::STR_TEXT_SETTINGS});
+  items.push_back({MenuAction::ZOOM, StrId::STR_ZOOM});
 }
 
 void EpubReaderMenuActivity::closeCancelled() {

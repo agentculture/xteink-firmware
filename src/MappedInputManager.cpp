@@ -12,8 +12,14 @@
 #include "CrossPointSettings.h"
 #include "components/HeaderBackTapTarget.h"
 #include "components/UITheme.h"
+#include "xteink/X3KeyProfile.h"
 
 namespace fui = freeink::ui;
+
+static_assert(xteink::x3keys::BACK == HalGPIO::BTN_BACK && xteink::x3keys::CONFIRM == HalGPIO::BTN_CONFIRM &&
+                  xteink::x3keys::LEFT == HalGPIO::BTN_LEFT && xteink::x3keys::RIGHT == HalGPIO::BTN_RIGHT &&
+                  xteink::x3keys::UP == HalGPIO::BTN_UP && xteink::x3keys::DOWN == HalGPIO::BTN_DOWN,
+              "X3 key profile indices must match HalGPIO");
 
 void MappedInputManager::update(const bool deferHomeButtonAction) const {
   gpio.update();
@@ -43,7 +49,7 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
     homeAction = deferredHomeAction;
     deferredHomeAction = HomeButtonAction::Ignore;
   }
-  for (uint8_t value = 0; value <= static_cast<uint8_t>(Button::ScreenDown); ++value) {
+  for (uint8_t value = 0; value <= static_cast<uint8_t>(Button::Zoom); ++value) {
     if (!isPressed(static_cast<Button>(value))) longPressFiredButtons &= ~(1u << value);
   }
 }
@@ -88,68 +94,99 @@ MappedInputManager::Button MappedInputManager::mapScreenDirection(const Button b
   return directions[orientation][direction];
 }
 
+bool MappedInputManager::isZoomKey(const uint8_t hw) const {
+  // The X3 profile has no side zoom key: zoom is long-press Confirm there.
+  if (hasX3KeyProfile()) return false;
+  return (SETTINGS.zoomButton == CrossPointSettings::ZOOM_BTN_UP && hw == HalGPIO::BTN_UP) ||
+         (SETTINGS.zoomButton == CrossPointSettings::ZOOM_BTN_DOWN && hw == HalGPIO::BTN_DOWN);
+}
+
+bool MappedInputManager::readKey(bool (HalGPIO::*fn)(uint8_t) const, const uint8_t slot) const {
+  return (gpio.*fn)(xteink::x3keys::physicalFor(slot, hasX3KeyProfile()));
+}
+
 bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint8_t) const) const {
   const auto sideLayout = SETTINGS.sideButtonLayout;
+  // The side key claimed by zoom mode never doubles as a page-turn key.
+  const auto sideKey = [&](const uint8_t hw) { return !isZoomKey(hw) && readKey(fn, hw); };
 
   switch (button) {
     case Button::Back:
       // Logical Back maps to user-configured front button.
-      return (gpio.*fn)(SETTINGS.frontButtonBack);
+      return readKey(fn, SETTINGS.frontButtonBack);
     case Button::Confirm:
       // Logical Confirm maps to user-configured front button.
-      return (gpio.*fn)(SETTINGS.frontButtonConfirm);
+      return readKey(fn, SETTINGS.frontButtonConfirm);
     case Button::Left:
       // Logical Left maps to user-configured front button.
-      return (gpio.*fn)(SETTINGS.frontButtonLeft);
+      return readKey(fn, SETTINGS.frontButtonLeft);
     case Button::Right:
       // Logical Right maps to user-configured front button.
-      return (gpio.*fn)(SETTINGS.frontButtonRight);
+      return readKey(fn, SETTINGS.frontButtonRight);
     case Button::Up:
       // Side buttons remain fixed for Up/Down.
-      return (gpio.*fn)(HalGPIO::BTN_UP);
+      return readKey(fn, HalGPIO::BTN_UP);
     case Button::Down:
       // Side buttons remain fixed for Up/Down.
-      return (gpio.*fn)(HalGPIO::BTN_DOWN);
+      return readKey(fn, HalGPIO::BTN_DOWN);
     case Button::Power:
       // Power button bypasses remapping.
       return (gpio.*fn)(HalGPIO::BTN_POWER);
     case Button::PageBack:
+      // The X3 profile turns pages with Left/Right (its edge keys) and keeps
+      // Up/Down free for line scrolling, so the side layout does not apply.
+      if (hasX3KeyProfile()) return false;
       // Reader page navigation uses side buttons and can be swapped via settings.
       switch (sideLayout) {
         case CrossPointSettings::PREV_NEXT:
-          return (gpio.*fn)(isNavDirectionSwapped() ? HalGPIO::BTN_DOWN : HalGPIO::BTN_UP);
+          return sideKey(isNavDirectionSwapped() ? HalGPIO::BTN_DOWN : HalGPIO::BTN_UP);
         case CrossPointSettings::NEXT_PREV:
-          return (gpio.*fn)(isNavDirectionSwapped() ? HalGPIO::BTN_UP : HalGPIO::BTN_DOWN);
+          return sideKey(isNavDirectionSwapped() ? HalGPIO::BTN_UP : HalGPIO::BTN_DOWN);
         case CrossPointSettings::PREV_PREV:
-          return (gpio.*fn)(HalGPIO::BTN_UP) || (gpio.*fn)(HalGPIO::BTN_DOWN);
+          return sideKey(HalGPIO::BTN_UP) || sideKey(HalGPIO::BTN_DOWN);
         case CrossPointSettings::NEXT_NEXT:
         case CrossPointSettings::SIDE_BUTTONS_DISABLED:
         default:
           return false;
       }
     case Button::PageForward:
+      if (hasX3KeyProfile()) return false;
       // Reader page navigation uses side buttons and can be swapped via settings.
       switch (sideLayout) {
         case CrossPointSettings::PREV_NEXT:
-          return (gpio.*fn)(isNavDirectionSwapped() ? HalGPIO::BTN_UP : HalGPIO::BTN_DOWN);
+          return sideKey(isNavDirectionSwapped() ? HalGPIO::BTN_UP : HalGPIO::BTN_DOWN);
         case CrossPointSettings::NEXT_PREV:
-          return (gpio.*fn)(isNavDirectionSwapped() ? HalGPIO::BTN_DOWN : HalGPIO::BTN_UP);
+          return sideKey(isNavDirectionSwapped() ? HalGPIO::BTN_DOWN : HalGPIO::BTN_UP);
         case CrossPointSettings::NEXT_NEXT:
-          return (gpio.*fn)(HalGPIO::BTN_UP) || (gpio.*fn)(HalGPIO::BTN_DOWN);
+          return sideKey(HalGPIO::BTN_UP) || sideKey(HalGPIO::BTN_DOWN);
         case CrossPointSettings::PREV_PREV:
         case CrossPointSettings::SIDE_BUTTONS_DISABLED:
         default:
           return false;
       }
+    case Button::Zoom:
+      return !hasX3KeyProfile() && SETTINGS.zoomButton != CrossPointSettings::ZOOM_BTN_OFF &&
+             (gpio.*fn)(SETTINGS.zoomButton == CrossPointSettings::ZOOM_BTN_DOWN ? HalGPIO::BTN_DOWN : HalGPIO::BTN_UP);
     case Button::NavNext:
-      // Logical "next item" navigation: side Down + front Right, with the control axis flipped in
+    case Button::NavPrevious: {
+      // Logical "next/previous item": side Down/Up + front Right/Left, with the control axis flipped in
       // INVERTED / LANDSCAPE_CCW under the live orientation policy, matching the rotated hint labels.
-      return isNavDirectionSwapped() ? (mapButton(Button::Up, fn) || mapButton(Button::Left, fn))
-                                     : (mapButton(Button::Down, fn) || mapButton(Button::Right, fn));
-    case Button::NavPrevious:
-      // Logical "previous item" navigation: side Up + front Left, axis-flipped in the same orientations.
-      return isNavDirectionSwapped() ? (mapButton(Button::Down, fn) || mapButton(Button::Right, fn))
-                                     : (mapButton(Button::Up, fn) || mapButton(Button::Left, fn));
+      // The step table is xteink::x3keys::listStep (host-tested with the X3 profile).
+      struct Dir {
+        Button button;
+        uint8_t slot;
+      };
+      static constexpr Dir dirs[] = {{Button::Up, HalGPIO::BTN_UP},
+                                     {Button::Left, HalGPIO::BTN_LEFT},
+                                     {Button::Down, HalGPIO::BTN_DOWN},
+                                     {Button::Right, HalGPIO::BTN_RIGHT}};
+      const int want = button == Button::NavNext ? 1 : -1;
+      const bool swapped = isNavDirectionSwapped();
+      for (const Dir& dir : dirs) {
+        if (xteink::x3keys::listStep(dir.slot, swapped) == want && mapButton(dir.button, fn)) return true;
+      }
+      return false;
+    }
     case Button::ScreenLeft:
     case Button::ScreenRight:
     case Button::ScreenUp:
@@ -396,7 +433,7 @@ void MappedInputManager::suppressNextRelease(const Button button) const {
 
 bool MappedInputManager::consumeSuppressedRelease() const {
   uint16_t released = 0;
-  for (uint8_t value = 0; value <= static_cast<uint8_t>(Button::ScreenDown); ++value) {
+  for (uint8_t value = 0; value <= static_cast<uint8_t>(Button::Zoom); ++value) {
     const uint16_t bit = 1u << value;
     if ((suppressedReleaseButtons & bit) != 0 && mapButton(static_cast<Button>(value), &HalGPIO::wasReleased)) {
       released |= bit;
@@ -426,7 +463,9 @@ MappedInputManager::Labels MappedInputManager::mapLabels(const char* back, const
   const char* leftLabel = swapLabels ? next : previous;
   const char* rightLabel = swapLabels ? previous : next;
 
-  return mapFrontLabels(back, confirm, leftLabel, rightLabel);
+  // Under the X3 profile the keys under hints 3/4 are Up/Down, which step the
+  // same previous/next way as NavPrevious/NavNext.
+  return mapFrontLabels(back, confirm, leftLabel, rightLabel, leftLabel, rightLabel);
 }
 
 MappedInputManager::Labels MappedInputManager::mapDirectionalLabels(const char* back, const char* confirm,
@@ -439,11 +478,13 @@ MappedInputManager::Labels MappedInputManager::mapDirectionalLabels(const char* 
     if (mapScreenDirection(Button::ScreenDown) == rawButton) return down;
     return "";
   };
-  return mapFrontLabels(back, confirm, labelForButton(Button::Left), labelForButton(Button::Right));
+  return mapFrontLabels(back, confirm, labelForButton(Button::Left), labelForButton(Button::Right),
+                        labelForButton(Button::Up), labelForButton(Button::Down));
 }
 
 MappedInputManager::Labels MappedInputManager::mapFrontLabels(const char* back, const char* confirm, const char* left,
-                                                              const char* right) const {
+                                                              const char* right, const char* up,
+                                                              const char* down) const {
   // Build the label order based on the configured hardware mapping.
   auto labelForHardware = [&](uint8_t hw) -> const char* {
     // Compare against configured logical roles and return the matching label.
@@ -462,24 +503,21 @@ MappedInputManager::Labels MappedInputManager::mapFrontLabels(const char* back, 
     return "";
   };
 
+  // Hints sit over the four bottom keys. Under the X3 profile the last two of
+  // those are the fixed Up/Down slots; the remappable Left/Right are the edges.
+  if (hasX3KeyProfile()) {
+    return {labelForHardware(HalGPIO::BTN_BACK), labelForHardware(HalGPIO::BTN_CONFIRM), up, down};
+  }
   return {labelForHardware(HalGPIO::BTN_BACK), labelForHardware(HalGPIO::BTN_CONFIRM),
           labelForHardware(HalGPIO::BTN_LEFT), labelForHardware(HalGPIO::BTN_RIGHT)};
 }
 
 int MappedInputManager::getPressedFrontButton() const {
-  // Scan the raw front buttons in hardware order.
-  // This bypasses remapping so the remap activity can capture physical presses.
-  if (gpio.wasPressed(HalGPIO::BTN_BACK)) {
-    return HalGPIO::BTN_BACK;
-  }
-  if (gpio.wasPressed(HalGPIO::BTN_CONFIRM)) {
-    return HalGPIO::BTN_CONFIRM;
-  }
-  if (gpio.wasPressed(HalGPIO::BTN_LEFT)) {
-    return HalGPIO::BTN_LEFT;
-  }
-  if (gpio.wasPressed(HalGPIO::BTN_RIGHT)) {
-    return HalGPIO::BTN_RIGHT;
+  // Scan the front slots in hardware order, bypassing the remap so the remap
+  // activity can capture presses. Under the X3 profile the Left/Right slots are
+  // the edge keys.
+  for (const uint8_t slot : {HalGPIO::BTN_BACK, HalGPIO::BTN_CONFIRM, HalGPIO::BTN_LEFT, HalGPIO::BTN_RIGHT}) {
+    if (readKey(&HalGPIO::wasPressed, slot)) return slot;
   }
   return -1;
 }

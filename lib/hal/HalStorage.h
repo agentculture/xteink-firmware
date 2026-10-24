@@ -48,6 +48,8 @@ class HalStorage {
   // Read the whole file at `path` into `out`. Fails (without allocating) on
   // missing, directory, empty, above-`cap`, or short-read files.
   bool readFileToString(const char* moduleName, const std::string& path, size_t cap, std::string& out);
+  // Free card space in bytes (SDCardManager's 20 s cached FAT scan), 0 when unknown.
+  uint64_t sdFreeBytes();
   // Write a string to `path` on the SD card. Overwrites existing file.
   // Returns true on success.
   bool writeFile(const char* path, const String& content);

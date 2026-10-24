@@ -38,4 +38,8 @@ bool syncNow(uint32_t timeoutMs);
 // an expiry. Callers enforcing a date fail closed on 0.
 int64_t trustedNow();
 
+// The floor persisted in NVS (0 when none). Lets a caller judge a clock
+// reading taken before init() restored the floor (xteink daily routine).
+int64_t persistedFloor();
+
 }  // namespace trustedtime

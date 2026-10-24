@@ -122,6 +122,15 @@ constexpr TimezoneInfo TABLE[] = {
 constexpr size_t TABLE_COUNT = sizeof(TABLE) / sizeof(TABLE[0]);
 constexpr uint8_t UTC_INDEX = 17;
 static_assert(TABLE[UTC_INDEX].stdOffsetQ == 0, "UTC_INDEX must point at the UTC entry");
+constexpr uint8_t JERUSALEM_INDEX = 23;
+static_assert(strcmp(TABLE[JERUSALEM_INDEX].name, "Jerusalem") == 0, "JERUSALEM_INDEX must point at Jerusalem");
+// What an unset zone (clockTimezone 255, no legacy offset) resolves to. xteink
+// builds (-DXTEINK_CLOCK_DEFAULTS) default to Jerusalem; the stored value stays 255.
+#ifdef XTEINK_CLOCK_DEFAULTS
+constexpr uint8_t DEFAULT_INDEX = JERUSALEM_INDEX;
+#else
+constexpr uint8_t DEFAULT_INDEX = UTC_INDEX;
+#endif
 static_assert(TABLE_COUNT < 255, "255 is the 'never chosen' sentinel in clockTimezone");
 
 }  // namespace
@@ -147,7 +156,7 @@ uint8_t activeIndex() {
       if (TABLE[i].stdOffsetQ == legacyQ) return static_cast<uint8_t>(i);
     }
   }
-  return UTC_INDEX;
+  return DEFAULT_INDEX;
 }
 
 void formatOffset(const uint8_t index, char* buf, const size_t bufSize) {
