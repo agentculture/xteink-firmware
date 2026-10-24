@@ -49,7 +49,6 @@ namespace {
 constexpr const char* kTag = "XSYNC";
 constexpr const char* kFirmwareVersion = "xteink-fw " CROSSPOINT_VERSION;
 // Delivered books land here, apart from anything the user sideloads.
-constexpr const char* kBooksDir = "/xteink";
 constexpr const char* kManifestPath = "/.crosspoint/xteink-delivered.json";
 constexpr const char* kManifestTmp = "/.crosspoint/xteink-delivered.json.tmp";
 // One download at a time, staged here and renamed into kBooksDir once verified.
@@ -484,16 +483,27 @@ bool isOurs(const Manifest& m, const std::string& path) {
   return std::any_of(m.files.begin(), m.files.end(), [&path](const DeliveredFile& f) { return f.path == path; });
 }
 
-// Moves the verified kPartPath into kBooksDir. Never overwrites a sideloaded
-// or user-modified file.
+// Moves the verified kPartPath into the item's kind folder (kindFolder(), under
+// kBooksDir). Never overwrites a sideloaded or user-modified file.
 bool placeFile(const QueueItem& item, const Manifest& m, const std::vector<std::string>& modified,
                std::string& outPath) {
-  if (!Storage.exists(kBooksDir) && !Storage.mkdir(kBooksDir)) return false;
-  const std::string dir = std::string(kBooksDir) + "/";
-  std::string path = dir + bookFileName(item.title, item.id, item.format);
+  // Storage.mkdir creates missing parents, so this also makes kBooksDir.
+  const char* const folder = kindFolder(item.kind);
+  if (!Storage.exists(folder) && !Storage.mkdir(folder)) {
+    LOG_ERR(kTag, "Cannot create folder %s", folder);
+    return false;
+  }
+  HalFile dir = Storage.open(folder);
+  if (!dir || !dir.isDirectory()) {
+    LOG_ERR(kTag, "Not a folder, cannot place items in: %s", folder);
+    return false;
+  }
+  dir.close();
+  const std::string base = std::string(folder) + "/";
+  std::string path = base + bookFileName(item.title, item.id, item.format);
   bool replace = false;
   if (Storage.exists(path.c_str())) {
-    path = dir + bookFileNameWithId(item.title, item.id, item.format);
+    path = base + bookFileNameWithId(item.title, item.id, item.format);
     if (Storage.exists(path.c_str())) {
       if (!isOurs(m, path) || contains(modified, path)) {
         LOG_ERR(kTag, "Name taken by a file we did not deliver: %s", path.c_str());

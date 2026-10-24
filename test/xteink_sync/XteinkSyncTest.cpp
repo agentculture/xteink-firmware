@@ -87,12 +87,62 @@ TEST(XteinkSyncQueue, ParsesDocExample) {
   EXPECT_EQ(q.items[0].sha256, kShaC);
   EXPECT_EQ(q.items[0].format, "epub");
   EXPECT_EQ(q.items[0].url, "/api/device/items/42");
+  EXPECT_EQ(q.items[0].kind, ItemKind::Book);  // the doc example carries no kind
   ASSERT_EQ(q.skipped.size(), 1u);
   EXPECT_EQ(q.skipped[0].id, 43);
   EXPECT_EQ(q.skipped[0].reason, "sd_full");
   ASSERT_EQ(q.deletes.size(), 1u);
   EXPECT_EQ(q.deletes[0], kShaA);
   EXPECT_EQ(q.droppedItems, 0u);
+}
+
+namespace {
+// One-item queue body with an optional raw "kind" JSON fragment (e.g. R"("kind":"article")").
+std::string queueWithKind(const std::string& kindFragment) {
+  return R"({"protocol":"1","items":[{"id":7,"size":10,"sha256":")" + kShaA +
+         R"(","format":"epub","url":"/api/device/items/7")" + (kindFragment.empty() ? "" : "," + kindFragment) + "}]}";
+}
+
+ItemKind kindOf(const std::string& kindFragment) {
+  Queue q;
+  EXPECT_TRUE(parseQ(queueWithKind(kindFragment), q));
+  EXPECT_EQ(q.items.size(), 1u);
+  EXPECT_EQ(q.droppedItems, 0u);
+  return q.items.empty() ? ItemKind::Book : q.items[0].kind;
+}
+}  // namespace
+
+TEST(XteinkSyncQueue, ParsesKind) {
+  EXPECT_EQ(kindOf(R"("kind":"book")"), ItemKind::Book);
+  EXPECT_EQ(kindOf(R"("kind":"article")"), ItemKind::Article);
+  EXPECT_EQ(kindOf(R"("kind":"transcript")"), ItemKind::Transcript);
+  EXPECT_EQ(kindOf(R"("kind":"newspaper")"), ItemKind::Newspaper);
+  EXPECT_EQ(kindOf(R"("kind":"Transcript")"), ItemKind::Transcript);  // lowercased
+}
+
+TEST(XteinkSyncQueue, AbsentUnknownOrNonStringKindIsBook) {
+  EXPECT_EQ(kindOf(""), ItemKind::Book);
+  EXPECT_EQ(kindOf(R"("kind":"podcast")"), ItemKind::Book);
+  EXPECT_EQ(kindOf(R"("kind":"")"), ItemKind::Book);
+  EXPECT_EQ(kindOf(R"("kind":null)"), ItemKind::Book);
+  EXPECT_EQ(kindOf(R"("kind":3)"), ItemKind::Book);
+  EXPECT_EQ(kindOf(R"("kind":["article"])"), ItemKind::Book);
+}
+
+TEST(XteinkSyncKind, EveryFolderIsUnderTheBooksDir) {
+  const std::string root = kBooksDir;
+  EXPECT_EQ(kindFolder(ItemKind::Book), root);
+  for (const ItemKind k : {ItemKind::Article, ItemKind::Transcript, ItemKind::Newspaper}) {
+    EXPECT_EQ(std::string(kindFolder(k)).rfind(root + "/", 0), 0u) << kindFolder(k);
+  }
+}
+
+TEST(XteinkSyncKind, FolderPerKind) {
+  EXPECT_STREQ(kindFolder(ItemKind::Book), "/xteink");
+  EXPECT_STREQ(kindFolder(ItemKind::Article), "/xteink/articles");
+  EXPECT_STREQ(kindFolder(ItemKind::Transcript), "/xteink/transcripts");
+  EXPECT_STREQ(kindFolder(ItemKind::Newspaper), "/xteink/newspapers");
+  EXPECT_STREQ(kindFolder(static_cast<ItemKind>(99)), "/xteink");  // unknown -> book folder
 }
 
 TEST(XteinkSyncQueue, EmptyQueue) {
