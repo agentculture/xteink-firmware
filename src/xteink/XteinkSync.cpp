@@ -484,12 +484,15 @@ bool isOurs(const Manifest& m, const std::string& path) {
   return std::any_of(m.files.begin(), m.files.end(), [&path](const DeliveredFile& f) { return f.path == path; });
 }
 
-// Moves the verified kPartPath into kBooksDir. Never overwrites a sideloaded
-// or user-modified file.
+// Moves the verified kPartPath into the item's kind folder (kindFolder(), under
+// kBooksDir). Never overwrites a sideloaded or user-modified file.
 bool placeFile(const QueueItem& item, const Manifest& m, const std::vector<std::string>& modified,
                std::string& outPath) {
   if (!Storage.exists(kBooksDir) && !Storage.mkdir(kBooksDir)) return false;
-  const std::string dir = std::string(kBooksDir) + "/";
+  // Storage.mkdir is not recursive: /xteink first, then the kind subfolder.
+  const char* const folder = kindFolder(item.kind);
+  if (!Storage.exists(folder) && !Storage.mkdir(folder)) return false;
+  const std::string dir = std::string(folder) + "/";
   std::string path = dir + bookFileName(item.title, item.id, item.format);
   bool replace = false;
   if (Storage.exists(path.c_str())) {
