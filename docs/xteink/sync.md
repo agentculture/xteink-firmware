@@ -59,8 +59,9 @@ Upstream files get only small hooks:
      books into `/xteink/`, articles into `/xteink/articles`, transcripts into
      `/xteink/transcripts` and newspapers into `/xteink/newspapers`. The
      folder is created when missing. Files delivered earlier stay where they
-     are; nothing already on the card is moved. The client never overwrites a sideloaded or user-modified file. If the title
-     is taken inside that folder, it uses `Title (id).ext`.
+     are; nothing already on the card is moved. The client never overwrites a
+     sideloaded or user-modified file. If the title is taken inside that
+     folder, it uses `Title (id).ext`.
    - The manifest is saved, then the client sends `POST /api/device/ack`.
    - If the ack never arrived, the next sync finds the file in the manifest
      and acks it again instead of downloading it twice.

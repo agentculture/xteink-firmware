@@ -123,7 +123,10 @@ enum class ItemKind : uint8_t { Book, Article, Transcript, Newspaper };
 // anything else -> Book.
 ItemKind parseItemKind(const std::string& s);
 
-// SD folder (no trailing slash) for a kind: "/xteink" for Book,
+// Root of everything the server delivers; books land directly in it.
+constexpr const char* kBooksDir = "/xteink";
+
+// SD folder (no trailing slash) for a kind: kBooksDir ("/xteink") for Book,
 // "/xteink/articles", "/xteink/transcripts", "/xteink/newspapers". An
 // out-of-range value gets the Book folder.
 const char* kindFolder(ItemKind kind);

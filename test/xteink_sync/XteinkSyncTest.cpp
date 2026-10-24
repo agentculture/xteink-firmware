@@ -87,6 +87,7 @@ TEST(XteinkSyncQueue, ParsesDocExample) {
   EXPECT_EQ(q.items[0].sha256, kShaC);
   EXPECT_EQ(q.items[0].format, "epub");
   EXPECT_EQ(q.items[0].url, "/api/device/items/42");
+  EXPECT_EQ(q.items[0].kind, ItemKind::Book);  // the doc example carries no kind
   ASSERT_EQ(q.skipped.size(), 1u);
   EXPECT_EQ(q.skipped[0].id, 43);
   EXPECT_EQ(q.skipped[0].reason, "sd_full");
@@ -128,10 +129,12 @@ TEST(XteinkSyncQueue, AbsentUnknownOrNonStringKindIsBook) {
   EXPECT_EQ(kindOf(R"("kind":["article"])"), ItemKind::Book);
 }
 
-TEST(XteinkSyncQueue, DocExampleItemDefaultsToBook) {
-  Queue q;
-  ASSERT_TRUE(parseQ(queueWithKind(""), q));
-  EXPECT_EQ(q.items[0].kind, ItemKind::Book);
+TEST(XteinkSyncKind, EveryFolderIsUnderTheBooksDir) {
+  const std::string root = kBooksDir;
+  EXPECT_EQ(kindFolder(ItemKind::Book), root);
+  for (const ItemKind k : {ItemKind::Article, ItemKind::Transcript, ItemKind::Newspaper}) {
+    EXPECT_EQ(std::string(kindFolder(k)).rfind(root + "/", 0), 0u) << kindFolder(k);
+  }
 }
 
 TEST(XteinkSyncKind, FolderPerKind) {
